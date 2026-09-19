@@ -95,11 +95,32 @@ Deleting a package version breaks every digest pin to it, silently and permanent
 
 ## Known issues before first build
 
-Everything below is carried forward from design notes and course materials. **None of it has been tested, because nothing in this repository has ever been built.** Expect this list to be wrong in places; the first real build is how we find out which places.
+Most of the list below came from design notes and course materials. Where something has since been tested, it says so.
 
-### The cs341 images have never been built
+### Both cs341 images now build, and their smoke tests pass on amd64
 
-`cs341/fa26` (Ubuntu 26.04) and `cs341/sp27` (Debian trixie-slim) are the only real offerings, and neither has been built, run, or measured. Every memory figure elsewhere in this project is an estimate read off a course website. The first CI run is expected to fail and to be informative.
+First built 2026-09-19. The first run found two real defects, both fixed: the clang sanitizer runtimes live in a separate package (`libclang-rt-dev`) on both distros, and the fa26 smoke test still asserted clang 18.1.3 from the removed 24.04 pins.
+
+Resolved toolchains — these are what a future `apt_pins` file should be built from:
+
+| | base | clang | glibc |
+|---|---|---|---|
+| `cs341/fa26` | Ubuntu 26.04 | 21.1.8 | 2.43 |
+| `cs341/sp27` | Debian trixie-slim | 19.1.7 | 2.41 |
+
+Still unmeasured: everything about memory under real workloads. Run `bigtest.sh` on the target hardware — see [BIGTEST.md](BIGTEST.md).
+
+### Do not publish arm64 images for cs341
+
+Tested 2026-09-19 on an arm64 Mac, building the same Dockerfile natively: **AddressSanitizer's leak detection silently fails to report a leak** that the same image reports correctly on amd64. A student on such an image would see nothing where the grader expects a leak report — a failure with no error message. `multiarch` stays `false` for this class.
+
+### A Mac cannot validate these images
+
+On an Apple-silicon Mac the amd64 image runs under emulation, where ThreadSanitizer refuses to start (`memory layout is incompatible`) and gdb cannot ptrace (`Cannot PTRACE_GETREGS`), even with `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`. Both work on real amd64. A Mac can confirm the image builds and the toolchain runs; it cannot confirm the debugging tools this course is about.
+
+### gdb needs SYS_PTRACE granted
+
+Attaching gdb or strace to a *running* process needs `--cap-add=SYS_PTRACE` (Kubernetes: `securityContext.capabilities.add: ["SYS_PTRACE"]`). Without it the container refuses with "Operation not permitted". Launching a program under gdb works unprivileged.
 
 Related: the course's grader image, `cs341-illinois/docker-base`, is still Ubuntu 24.04 with clang-18. **Both offerings here currently differ from the grader.** Either the grader gets rebased, or the difference is accepted knowingly. It is written in both Dockerfiles so it cannot be accepted quietly.
 

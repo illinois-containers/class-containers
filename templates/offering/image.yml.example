@@ -1,0 +1,25 @@
+# image.yml is OPTIONAL. Without it, an offering directory containing a
+# Dockerfile builds as <semester>-<class>-img1, runs ci-smoke.sh if present,
+# amd64 only, status active. Neither cs341/fa26 nor cs341/sp27 has one.
+#
+# Add it only for the cases the path cannot express. NEVER add `class:`,
+# `semester:` or `owners:` — the directory path defines the first two and
+# CODEOWNERS defines the third. Validation rejects them, because a manifest
+# copied from last year with a stale semester is exactly the mistake this
+# layout exists to prevent.
+
+status: active        # active | frozen. Default active. Frozen is never rebuilt automatically.
+
+multiarch: false      # true also builds linux/arm64 (slow; skips the in-image smoke test)
+
+# Several images from one offering — e.g. a student image and a grader image:
+images:
+  - subname: img1
+    dockerfile: Dockerfile
+    smoke: ci-smoke.sh
+  - subname: grader
+    dockerfile: Dockerfile.grader
+    smoke: ci-smoke.sh
+
+notes: >
+  Anything a future maintainer needs to know about this offering.

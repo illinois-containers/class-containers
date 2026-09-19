@@ -1,0 +1,42 @@
+# Code owners — who reviews what.
+#
+# This file is the ONLY place ownership is recorded. image.yml has no `owners`
+# field on purpose: a copied manifest names last year's instructor, and GitHub
+# routes reviews from this file regardless, so the two would silently disagree.
+# See docs/DESIGN.md.
+#
+# Onboarding an instructor is uncommenting one line and replacing the
+# placeholder with their GitHub username. A class directory covers every
+# semester under it (cs341/fa26/, cs341/sp27/, ...) and the class-level
+# CommentsForClass.md and Dockerfile.suggested.
+#
+# Last matching pattern wins, so the default line must stay first.
+
+# Default owner: workflows, validation, shared docs, and any class not
+# claimed below.
+*                   @angrave
+
+# ---------------------------------------------------------------------------
+# Onboarded classes
+# ---------------------------------------------------------------------------
+
+/cs341/             @angrave     # CS 341 — System Programming (pilot)
+
+# ---------------------------------------------------------------------------
+# Not yet onboarded — CommentsForClass.md and an untested Dockerfile.suggested
+# only. Uncomment and set the instructor's GitHub username when they join.
+# ---------------------------------------------------------------------------
+
+# /cs233/           @instructor  # CS 233 — Computer Architecture
+# /cs340/           @instructor  # CS 340 — Introduction to Computer Systems
+# /cs411/           @instructor  # CS 411 — Database Systems
+# /cs423/           @instructor  # CS 423 — Operating Systems Design
+# /cs425/           @instructor  # CS 425 / ECE 428 — Distributed Systems
+# /cs426/           @instructor  # CS 426 — Compiler Construction
+# /cs433/           @instructor  # CS 433 / CSE 422 — Computer System Organization
+# /cs460/           @instructor  # CS 460 / ECE 419 — Security Laboratory
+# /cs461/           @instructor  # CS 461 / ECE 422 — Computer Security I
+# /cs511/           @instructor  # CS 511 — Advanced Data Management
+# /cs525/           @instructor  # CS 525 — Advanced Distributed Systems
+# /cs598ape/        @instructor  # CS 598 APE — Performance Engineering
+# /eng298/          @instructor  # ENG 298 (CYB) and ENG 498 (FSA)

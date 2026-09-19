@@ -14,6 +14,25 @@ A VM gives each student a whole machine: its own kernel, several gigabytes of RA
 | `cs341/sp27/` | Draft of a smaller Debian-based image. |
 | every other `<class>/` | A `CommentsForClass.md` for that instructor, and an untested `Dockerfile.suggested`. Never built, never run. |
 
+## This repository and its images are public
+
+Anyone can read this repository and pull the images it builds. Treat every file here, and everything baked into a layer, as published.
+
+**Never commit or build into an image:**
+
+- API keys, tokens, passwords, certificates or SSH private keys — including ones only meant for a grader or an internal service
+- MP solutions, reference implementations, or test cases students have not seen
+- Unreleased handouts, exam material, or anything under embargo until a future semester
+- Student work, grades, or anything else covered by FERPA
+- Licensed third-party software that may not be redistributed
+
+Two things people get wrong:
+
+- **A deleted file is still published.** Git keeps history, and a pushed commit cannot be unpublished — the fix for a leaked secret is to rotate it, not to delete the file.
+- **`COPY` then `rm` in a later layer still ships the file.** Anyone can unpack the earlier layer. If a build genuinely needs a private file, it must come from a build secret or a private source at build time, never from this repository.
+
+Course material that cannot be public — a licensed tool, a private fork, unpublished solutions — should live in a private repository or an internal artifact store and be fetched at build time. Ask before adding one, so we can set it up the same way each time.
+
 ## Layout
 
 ```

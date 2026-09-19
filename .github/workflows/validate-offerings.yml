@@ -1,0 +1,54 @@
+name: validate-offerings
+
+# The gatekeeper for instructor contributions: every PR and push is checked
+# before anything is built. See .github/scripts/validate-offerings.sh.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files and PR labels
+        id: ctx
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA:-${BEFORE_SHA:-}}"
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git diff --name-only "$base" "${GITHUB_SHA}" > changed.txt || true
+          else
+            : > changed.txt
+          fi
+          echo "labels=${LABELS}" >> "$GITHUB_OUTPUT"
+          echo "changed files:"; cat changed.txt
+
+      - name: Validate
+        env:
+          PR_LABELS: ${{ steps.ctx.outputs.labels }}
+        run: |
+          set -euo pipefail
+          CHANGED_FILES="$(cat changed.txt)" .github/scripts/validate-offerings.sh
+
+      - name: Shell syntax check
+        run: |
+          set -euo pipefail
+          fails=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "::error::$f has a syntax error"; fails=1; }
+          done < <(find . -name '*.sh' -not -path './.git/*')
+          exit $fails

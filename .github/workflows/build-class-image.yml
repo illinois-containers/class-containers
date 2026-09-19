@@ -1,0 +1,186 @@
+name: build-class-image
+
+# Offerings are discovered from the directory tree: <class>/<semester>/Dockerfile.
+# The path is the only source of truth for class and semester — there is no
+# central registry to edit, so adding an offering is adding a directory.
+# See docs/DESIGN.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      offering:
+        description: 'Offering path, e.g. cs341/fa26. Empty = every active offering.'
+        required: false
+        default: ''
+      subname:
+        description: 'Only build this subname (e.g. img1). Empty = all of the offering''s images.'
+        required: false
+        default: ''
+      push_image:
+        description: 'Push to the registry (uncheck for build-only)'
+        type: boolean
+        required: false
+        default: true
+      force_frozen:
+        description: 'Required to build an offering marked status: frozen'
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly rebuild for base-image security updates. Only offerings that are
+    # BOTH status: active AND listed in the ACTIVE_SEMESTERS variable are built,
+    # so a forgotten freeze cannot resurrect an old semester.
+    - cron: '30 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-class-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.sel.outputs.matrix }}
+      count: ${{ steps.sel.outputs.count }}
+      push: ${{ steps.sel.outputs.push }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Discover offerings and select what to build
+        id: sel
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_OFFERING: ${{ github.event.inputs.offering }}
+          IN_SUBNAME: ${{ github.event.inputs.subname }}
+          IN_PUSH: ${{ github.event.inputs.push_image }}
+          IN_FORCE: ${{ github.event.inputs.force_frozen }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ACTIVE_SEMESTERS: ${{ vars.ACTIVE_SEMESTERS }}
+          REGISTRY: ${{ vars.REGISTRY }}
+          OWNER: ${{ github.repository_owner }}
+        run: .github/scripts/select-offerings.sh
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # GITHUB_TOKEN only; no secrets are configured
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Set up QEMU (only for opt-in multi-arch offerings)
+        if: matrix.multiarch
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Log in to the registry
+        if: needs.prepare.outputs.push == 'true'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ matrix.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          date_tag="$(date -u +%Y%m%d)"
+          short_sha="${GITHUB_SHA::7}"
+          # No `latest`: a moving tag mid-semester is the failure students
+          # cannot diagnose. The dated tag is immutable; pin the digest.
+          {
+            echo "tags<<TAGS_EOF"
+            echo "${{ matrix.image }}:${{ matrix.tag_base }}"
+            echo "${{ matrix.image }}:${{ matrix.tag_base }}-${date_tag}-${short_sha}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and maybe push
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
+          load: ${{ needs.prepare.outputs.push != 'true' && !matrix.multiarch }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.offering }}-${{ matrix.subname }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.offering }}-${{ matrix.subname }}
+          pull: true
+          provenance: false
+          labels: |
+            org.opencontainers.image.title=${{ matrix.tag_base }}
+            org.opencontainers.image.description=Course container for ${{ matrix.class }} (${{ matrix.semester }})
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            edu.illinois.class=${{ matrix.class }}
+            edu.illinois.semester=${{ matrix.semester }}
+
+      - name: Resolve a local reference to test
+        id: ref
+        if: '!matrix.multiarch'
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.prepare.outputs.push }}" = "true" ]; then
+            ref="${{ matrix.image }}@${{ steps.build.outputs.digest }}"
+            docker pull -q "$ref" >/dev/null
+          else
+            ref="${{ matrix.image }}:${{ matrix.tag_base }}"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test inside the built image
+        if: matrix.smoke != '' && !matrix.multiarch
+        run: |
+          set -euo pipefail
+          echo "running ${{ matrix.smoke }}"
+          docker run --rm --memory=2g --pids-limit=512 \
+            -v "$PWD/${{ matrix.smoke }}:/ci-smoke.sh:ro" \
+            "${{ steps.ref.outputs.ref }}" bash /ci-smoke.sh 2>&1 | tee smoke.log
+          {
+            echo "### Smoke test — ${{ matrix.offering }} (${{ matrix.subname }})"
+            echo '```'
+            cat smoke.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record image size and idle memory
+        if: '!matrix.multiarch'
+        run: |
+          set -euo pipefail
+          ref="${{ steps.ref.outputs.ref }}"
+          size=$(docker image inspect "$ref" --format '{{.Size}}' | awk '{printf "%.0f", $1/1048576}')
+          # Rough idle figure: what an unused container holds. Every other RAM
+          # number in this project is an estimate; this one is measured.
+          cid=$(docker run -d --memory=2g "$ref" sleep 30)
+          sleep 3
+          idle=$(docker stats --no-stream --format '{{.MemUsage}}' "$cid" | awk '{print $1}')
+          docker rm -f "$cid" >/dev/null
+          {
+            echo "### Measurements — ${{ matrix.offering }} (${{ matrix.subname }})"
+            echo "| metric | value |"
+            echo "|---|---|"
+            echo "| image size | ${size} MB |"
+            echo "| idle memory | ${idle} |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo ""
+            echo "For a real workload figure run bigtest.sh — see docs/BIGTEST.md."
+          } >> "$GITHUB_STEP_SUMMARY"

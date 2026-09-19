@@ -42,8 +42,8 @@ Inside a container, with the limits you intend to impose:
 
 ```
 docker run --rm --memory=2g --pids-limit=512 --cpus=4 \
-  -v "$PWD/cs341/fa26/bigtest.sh:/bigtest.sh:ro" \
-  ghcr.io/illinois-containers/cs341:fa26-img1 bash /bigtest.sh --level full
+  -v "$PWD/cs341/sp27/bigtest.sh:/bigtest.sh:ro" \
+  ghcr.io/illinois-containers/cs341:sp27-img1 bash /bigtest.sh --level full
 ```
 
 If it reports OOM kills, the limit is too low for that workload — raise it and note the real figure in the class's `CommentsForClass.md`.
@@ -53,8 +53,8 @@ If it reports OOM kills, the limit is too low for that workload — raise it and
 `scripts/farm-loadtest.sh` runs many containers of the same image simultaneously and reports how many fit:
 
 ```
-scripts/farm-loadtest.sh --image ghcr.io/illinois-containers/cs341:fa26-img1 \
-  --bigtest cs341/fa26/bigtest.sh --count 20 --memory 2g --pids 512 --cpus 2
+scripts/farm-loadtest.sh --image ghcr.io/illinois-containers/cs341:sp27-img1 \
+  --bigtest cs341/sp27/bigtest.sh --count 20 --memory 2g --pids 512 --cpus 2
 ```
 
 Every container runs at once on purpose: that is deadline night, not an average Tuesday. Each gets a distinct UID, because `RLIMIT_NPROC` is enforced per host UID — if students share one, they share one process budget and one student's fork bomb takes out the others. If your runtime cannot give them distinct UIDs, that is a finding worth writing down.

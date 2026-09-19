@@ -10,9 +10,10 @@ A VM gives each student a whole machine: its own kernel, several gigabytes of RA
 
 | | |
 |---|---|
-| `cs341/fa26/` | Being built. Derived from the course's existing grader image. |
-| `cs341/sp27/` | Draft of a smaller Debian-based image. |
+| `cs341/sp27/` | The pilot. Builds, publishes, and passes its smoke test on amd64. Debian trixie-slim, derived from the course's grader image. |
 | every other `<class>/` | A `CommentsForClass.md` for that instructor, and an untested `Dockerfile.suggested`. Never built, never run. |
+
+Published today: `cs341:sp27-img1` (amd64, for students and the farm) and `cs341:sp27-img1-arm64dev` (arm64, staff laptops only — leak detection does not work there; see `cs341/sp27/Known-Issues.md`).
 
 ## This repository and its images are public
 
@@ -47,7 +48,7 @@ The semester lives in the directory name, not in a build setting. Duplicating a 
 
 ```
 ghcr.io/illinois-containers/<class>:<semester>-<subname>
-e.g. ghcr.io/illinois-containers/cs341:fa26-img1
+e.g. ghcr.io/illinois-containers/cs341:sp27-img1
 ```
 
 The sub-name lets one class publish more than one image — a student image and a grader image, say. There is deliberately no `latest` tag: a moving tag mid-semester is the one failure students cannot diagnose. Pin the digest.

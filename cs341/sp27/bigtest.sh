@@ -266,7 +266,7 @@ echo "phases failed: $FAILS"
 
 if [ -n "$JSON_OUT" ]; then
   { echo "{"
-    echo "  \"class\": \"cs341\", \"semester\": \"fa26\", \"level\": \"$LEVEL\","
+    echo "  \"class\": \"cs341\", \"semester\": \"sp27\", \"level\": \"$LEVEL\","
     echo "  \"limits\": {\"memory_max\": \"$MEM_MAX\", \"pids_max\": \"$PIDS_MAX\", \"cpu_max\": \"$CPU_MAX\", \"nproc_seen\": $NPROC_SEEN, \"jobs\": $JOBS},"
     echo "  \"peak_mb\": ${OVERALL_PEAK:-0}, \"suggested_memory_mb\": $SUGGEST, \"failed_phases\": $FAILS,"
     echo "  \"phases\": [$(IFS=,; echo "${RESULTS[*]}")]"

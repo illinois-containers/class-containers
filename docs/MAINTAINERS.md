@@ -97,16 +97,17 @@ Deleting a package version breaks every digest pin to it, silently and permanent
 
 Most of the list below came from design notes and course materials. Where something has since been tested, it says so.
 
-### Both cs341 images now build, and their smoke tests pass on amd64
+### cs341/sp27 builds and its smoke test passes on amd64
 
-First built 2026-09-19. The first run found two real defects, both fixed: the clang sanitizer runtimes live in a separate package (`libclang-rt-dev`) on both distros, and the fa26 smoke test still asserted clang 18.1.3 from the removed 24.04 pins.
+First built 2026-09-19. The first run found two real defects, both fixed: the clang sanitizer runtimes live in a separate package (`libclang-rt-dev`), and a smoke test still asserted clang 18.1.3 from a removed pins file.
 
-Resolved toolchains — these are what a future `apt_pins` file should be built from:
+Resolved toolchain — this is what a future `apt_pins` file should be built from:
 
 | | base | clang | glibc |
 |---|---|---|---|
-| `cs341/fa26` | Ubuntu 26.04 | 21.1.8 | 2.43 |
 | `cs341/sp27` | Debian trixie-slim | 19.1.7 | 2.41 |
+
+A Fall 2026 offering (`cs341/fa26`, Ubuntu 26.04 / clang 21.1.8 / glibc 2.43) was built and then removed — Fall 2026 stays on VMs, so the container work starts with Spring 2027.
 
 Still unmeasured: everything about memory under real workloads. Run `bigtest.sh` on the target hardware — see [BIGTEST.md](BIGTEST.md).
 
@@ -146,12 +147,8 @@ A container cannot set this for itself, so this belongs to whoever runs the host
 
 The Dockerfiles take `STUDENT_UID` as a build arg defaulting to 1000, but the runtime platform is expected to override the UID per student. If the runtime cannot give distinct UIDs, that is a finding worth writing down before the platform is chosen, not after.
 
-### The fa26 apt pins were removed and must be regenerated
+### Package versions are not pinned
 
-The course's existing pins name 24.04 package versions — clang-18 `1:18.1.3`, valgrind `3.22.0`, libc6-dbg `2.39` — which do not exist in Ubuntu 26.04. Pinning to them with `Pin-Priority: 1001` fails the build outright, so the pins file was removed rather than carried forward broken.
+The course's existing pins (in `cs341-illinois/docker-base`) name Ubuntu 24.04 versions — clang-18 `1:18.1.3`, valgrind `3.22.0`, libc6-dbg `2.39` — which do not exist in Debian trixie. Pinning to versions a distro does not ship fails the build outright with `Pin-Priority: 1001`, so `cs341/sp27` installs unversioned packages today.
 
-Package names in `cs341/fa26/Dockerfile` are therefore unversioned today. **The first successful build must record the resolved versions**, which then become an `apt_pins` file in that directory. The same applies to `cs341/sp27` against Debian trixie.
-
-Until that happens, two builds a month apart can produce different toolchains from the same Dockerfile — which is the thing pinning exists to prevent. Copy the versions out of the first green build's job summary and commit them.
-
-`cs341/fa26/ci-smoke.sh` currently asserts the old pinned versions (clang 18.1.3, valgrind 3.22.0), so it is expected to fail on 26.04 until both it and the pins are regenerated together.
+**Turn the resolved versions above into an `apt_pins` file before the semester starts.** Until then, two builds a month apart can produce different toolchains from the same Dockerfile — the thing pinning exists to prevent.

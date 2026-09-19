@@ -39,7 +39,7 @@ At minimum:
 
   and paste it into the `FROM` line. Note the date in the comment above it, as the existing files do.
 
-- **Read the "Before this is used for grading" block** at the bottom of the file you copied and act on anything still outstanding. In `cs341/fa26/Dockerfile` that currently includes regenerating the apt pins and confirming version agreement with the autograder.
+- **Read the "Before this is used for grading" block** at the bottom of the file you copied and act on anything still outstanding. In `cs341/sp27/Dockerfile` that currently includes regenerating the apt pins and confirming version agreement with the autograder.
 
 - **Add or drop packages** the new semester's MPs need. Say why in a comment; the comment is the part a future maintainer reads.
 

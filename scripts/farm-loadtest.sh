@@ -8,8 +8,8 @@
 # than measuring.
 #
 # Usage:
-#   scripts/farm-loadtest.sh --image ghcr.io/illinois-containers/cs341:fa26-img1 \
-#                            --bigtest cs341/fa26/bigtest.sh \
+#   scripts/farm-loadtest.sh --image ghcr.io/illinois-containers/cs341:sp27-img1 \
+#                            --bigtest cs341/sp27/bigtest.sh \
 #                            --count 20 --memory 2g --pids 512 --cpus 2 [--level quick]
 #
 # Every container runs the same workload simultaneously, which is the deadline

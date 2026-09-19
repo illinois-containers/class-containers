@@ -101,11 +101,23 @@ else
   src=""
   src_rel=""
   # Most recent existing offering of this class: any subdirectory holding a
-  # Dockerfile, taking the last in sort order as a rough "most recent".
+  # Dockerfile, ranked chronologically (year, then sp < su < fa < wi).
+  best=""
   if [ -d "$repo_root/$class" ]; then
     for candidate in "$repo_root/$class"/*/; do
       [ -f "${candidate}Dockerfile" ] || continue
-      src="${candidate%/}"
+      name="$(basename "$candidate")"
+      case "$name" in
+        sp[0-9][0-9]) rank="${name#sp}1" ;;
+        su[0-9][0-9]) rank="${name#su}2" ;;
+        fa[0-9][0-9]) rank="${name#fa}3" ;;
+        wi[0-9][0-9]) rank="${name#wi}4" ;;
+        *) continue ;;
+      esac
+      if [ -z "$best" ] || [ "$rank" -gt "$best" ]; then
+        best="$rank"
+        src="${candidate%/}"
+      fi
     done
   fi
   if [ -n "$src" ]; then
@@ -146,7 +158,16 @@ if [ -f "$manifest" ]; then
     sed 's/^status[[:space:]]*:.*/status: active/' "$manifest" > "$tmp"
     mv "$tmp" "$manifest"
   else
-    printf 'status: active\n' >> "$manifest"
+    # Insert, do not append: a trailing "notes: >" block would swallow an
+    # appended line into its folded scalar.
+    tmp="$manifest.new.$$"
+    awk '
+      !done && /^[[:space:]]*(#|$)/ { print; next }
+      !done { print "status: active"; done = 1 }
+      { print }
+      END { if (!done) print "status: active" }
+    ' "$manifest" > "$tmp"
+    mv "$tmp" "$manifest"
   fi
   note "image.yml: removed any class/semester/owners fields, set status: active"
 else

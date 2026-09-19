@@ -21,12 +21,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # versions Debian trixie currently ships, and inventing those strings would
 # produce an image that fails to build. The first successful CI build records
 # the resolved versions in the job summary; copy them into an apt_pins file
-# here once they are known, the way cs341/fa26 does.
+# here once they are known. cs341/fa26 is in the same position.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       # toolchain
       build-essential \
       clang \
+      libclang-rt-dev \
       # debugging and analysis — the core of the course
       gdb \
       valgrind \

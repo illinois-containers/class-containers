@@ -27,6 +27,7 @@ RUN apt-get update && \
       # toolchain
       build-essential \
       clang \
+      libclang-rt-dev \
       cmake \
       # debugging and analysis — the core of the course
       gdb \

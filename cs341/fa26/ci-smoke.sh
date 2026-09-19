@@ -1,75 +1,129 @@
 #!/usr/bin/env bash
-# Smoke test for the cs341 student image (see cs341/testplan.md, section 2).
-# Runs inside the freshly built container as: bash /ci-smoke.sh
-# Checks the grader-pinned tool versions (rows 1, 8, 10) plus a tiny
-# compile-and-run (rows 2-3). Budget: well under 30 seconds.
-# Version mismatches and compile failures exit non-zero and fail the CI job.
-# The ThreadSanitizer check (row 4) is a WARNING only: LLVM 18 TSan aborts with
-# "unexpected memory mapping" on host kernels where vm.mmap_rnd_bits=32, and
-# that sysctl cannot be changed from inside a container (testplan section 0.1),
-# so a CI-runner failure there is a host finding, not an image defect.
+# Smoke test for the CS 341 Fall 2026 image. Runs inside the built image in
+# CI, and can be run by hand:
+#   docker run --rm -v "$PWD/cs341/fa26/ci-smoke.sh:/smoke.sh:ro" <image> bash /smoke.sh
+#
+# Checks that the tools exist AND that the things containers usually break
+# still work. Must stay quick (target: under 30s).
+set -uo pipefail
 
-set -euo pipefail
+fails=0
+pass() { printf '  ok    %s\n' "$1"; }
+fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+have() { command -v "$1" >/dev/null 2>&1; }
 
-pass() { echo "smoke: PASS - $*"; }
-warn() { echo "smoke: WARN - $*"; }
-fail() { echo "smoke: FAIL - $*" >&2; exit 1; }
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+cd "$work" || exit 1
 
-clang_ver="$(clang -dumpversion)"
-case "$clang_ver" in
-  18.1.3) pass "clang $clang_ver matches the grader pin (1:18.1.3-1ubuntu1)" ;;
-  18.*)   warn "clang $clang_ver is 18.x but not the pinned 18.1.3 - grader parity drift" ;;
-  *)      fail "clang $clang_ver - expected 18.1.3 per the apt pin" ;;
-esac
+echo "== versions (record these; they are the de facto pins until apt_pins exists)"
+for t in clang gcc gdb valgrind strace python3 git; do
+  if have "$t"; then
+    printf '  %-9s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"
+  else
+    fail "$t not installed"
+  fi
+done
+printf '  %-9s %s\n' "libc" "$(ldd --version 2>&1 | head -1)"
 
-valgrind_ver="$(valgrind --version)"
-case "$valgrind_ver" in
-  valgrind-3.22.0) pass "$valgrind_ver matches the grader pin (1:3.22.0-0ubuntu2)" ;;
-  valgrind-3.22*)  warn "$valgrind_ver is 3.22.x but not the pinned 3.22.0" ;;
-  *)               fail "$valgrind_ver - expected 3.22.0 per the apt pin" ;;
-esac
-
-strace_ver="$(strace --version | head -1)"
-case "$strace_ver" in
-  *6.8*) pass "strace reports $strace_ver (pin 6.8-0ubuntu2)" ;;
-  *)     fail "strace version unexpected: $strace_ver - expected 6.8 per the apt pin" ;;
-esac
-
-cat > /tmp/a.c <<'EOF'
+echo "== compile and run"
+cat > hello.c <<'EOF'
 #include <stdio.h>
-int main(void) { puts("c-ok"); return 0; }
+int main(void) { printf("hello\n"); return 0; }
 EOF
-clang -Wall -Werror -std=c99 /tmp/a.c -o /tmp/a
-out="$(/tmp/a)"
-[ "$out" = "c-ok" ] || fail "compiled binary printed '$out', expected 'c-ok'"
-pass "clang compile-and-run (testplan section 2, row 2)"
+if clang -Wall -Werror -o hello hello.c 2>err.txt && [ "$(./hello)" = "hello" ]; then
+  pass "clang compiles and runs a C program"
+else
+  fail "clang compile/run: $(head -3 err.txt)"
+fi
 
-cat > /tmp/t.c <<'EOF'
+echo "== sanitizers (the runtime may live in a separate Debian package)"
+cat > leak.c <<'EOF'
+#include <stdlib.h>
+int main(void) { char *p = malloc(32); p[0] = 1; return 0; }
+EOF
+if clang -fsanitize=address -g -o leak_asan leak.c 2>asan_build.txt; then
+  if ASAN_OPTIONS=detect_leaks=1 ./leak_asan 2>asan_run.txt; then
+    fail "AddressSanitizer did not report the leak (leak detection off?)"
+  else
+    grep -q "LeakSanitizer\|detected memory leaks" asan_run.txt \
+      && pass "AddressSanitizer detects a leak" \
+      || fail "ASan ran but produced no leak report"
+  fi
+else
+  fail "ASan build failed — install the clang runtime package: $(head -2 asan_build.txt)"
+fi
+
+cat > race.c <<'EOF'
 #include <pthread.h>
-#include <stdio.h>
-static void *f(void *_) { (void)_; puts("thr-ok"); return 0; }
+static int shared;
+static void *worker(void *arg) { (void)arg; for (int i = 0; i < 1000; i++) shared++; return 0; }
 int main(void) {
-  pthread_t t;
-  pthread_create(&t, 0, f, 0);
-  pthread_join(t, 0);
+  pthread_t a, b;
+  pthread_create(&a, 0, worker, 0); pthread_create(&b, 0, worker, 0);
+  pthread_join(a, 0); pthread_join(b, 0);
   return 0;
 }
 EOF
-clang -pthread /tmp/t.c -o /tmp/t
-out="$(/tmp/t)"
-[ "$out" = "thr-ok" ] || fail "pthread binary printed '$out', expected 'thr-ok'"
-pass "pthreads link and run (testplan section 2, row 3)"
-
-vout="$(valgrind -q --error-exitcode=9 /tmp/a 2>&1)" || fail "valgrind run failed: $vout"
-pass "valgrind clean run on the test binary (testplan section 2, row 8)"
-
-clang -fsanitize=thread -g -pthread /tmp/t.c -o /tmp/t_tsan
-if tout="$(timeout 10 /tmp/t_tsan 2>&1)"; then
-  pass "ThreadSanitizer runs on this host kernel (testplan section 2, row 4)"
+if clang -fsanitize=thread -g -o race_tsan race.c 2>tsan_build.txt; then
+  ./race_tsan >/dev/null 2>tsan_run.txt
+  if grep -q "WARNING: ThreadSanitizer" tsan_run.txt; then
+    pass "ThreadSanitizer detects a data race"
+  elif grep -qi "unable to mmap\|FATAL" tsan_run.txt; then
+    # The classic container failure: TSan's shadow mapping vs the host's
+    # vm.mmap_rnd_bits. Not fixable from inside the image.
+    fail "TSan could not start — host likely needs vm.mmap_rnd_bits=28: $(head -2 tsan_run.txt)"
+  else
+    fail "TSan ran but reported no race"
+  fi
 else
-  warn "TSan did not run cleanly; output follows. If it says 'unexpected memory mapping',"
-  warn "the HOST needs sysctl vm.mmap_rnd_bits=28 - a container cannot set it (testplan section 0.1)."
-  printf '%s\n' "$tout" | sed 's/^/  /'
+  fail "TSan build failed — install the clang runtime package: $(head -2 tsan_build.txt)"
 fi
 
-echo "smoke: cs341 image OK (${SECONDS}s)"
+echo "== valgrind"
+if valgrind --error-exitcode=42 --leak-check=full ./hello >/dev/null 2>vg.txt; then
+  pass "valgrind runs a binary cleanly"
+else
+  fail "valgrind failed: $(head -3 vg.txt)"
+fi
+
+echo "== gdb (needs SYS_PTRACE when attaching to a running process; this only"
+echo "   launches, which works unprivileged)"
+if gdb -batch -ex run -ex quit ./hello 2>gdb.txt | grep -q hello; then
+  pass "gdb launches and runs a program"
+else
+  fail "gdb failed: $(head -3 gdb.txt)"
+fi
+
+echo "== fork/exec and pipes"
+cat > fork.c <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/wait.h>
+int main(void) {
+  pid_t p = fork();
+  if (p == 0) { _exit(7); }
+  int st; waitpid(p, &st, 0);
+  printf("%d\n", WEXITSTATUS(st));
+  return 0;
+}
+EOF
+if clang -o forktest fork.c 2>/dev/null && [ "$(./forktest)" = "7" ]; then
+  pass "fork/waitpid works"
+else
+  fail "fork/waitpid test failed"
+fi
+
+echo "== container-specific sanity"
+nproc_seen="$(nproc)"
+echo "  note  nproc reports ${nproc_seen} — this is the HOST cpu count unless"
+echo "        the platform sets --cpuset-cpus; 'make -j\$(nproc)' can overcommit"
+[ "$(id -u)" != "0" ] && pass "running as non-root (uid $(id -u))" || fail "running as root"
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo "SMOKE OK"
+else
+  echo "SMOKE FAILED: $fails check(s)"
+fi
+exit "$fails"

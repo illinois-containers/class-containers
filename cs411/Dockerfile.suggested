@@ -1,0 +1,119 @@
+# =============================================================================
+# CS 411 (Database Systems) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 411 (Database Systems) - DRAFT headless student image
+# ---------------------------------------------------------------------------
+# Replaces the CS VM Farm "CS411 VM" (inferred: Ubuntu desktop with MySQL,
+# MongoDB, Neo4j (Desktop) + Python/Dash) for the MP / "Dashboard to Rule the
+# Academic World" workflow. See notes.md for evidence and open questions.
+#
+# What is inside:
+#   - MySQL 8.0 server + client       (port 3306)  tuned: my-lowmem.cnf
+#   - MongoDB 8.0 + mongosh + tools   (port 27017) tuned: mongod.conf
+#   - Neo4j 5.26 LTS Community        (7474 Browser/HTTP, 7687 Bolt) tuned
+#   - Python 3.12 venv with dash, plotly, pandas, mysql-connector, pymongo, neo4j
+#   - openssh-server (for SSH / VS Code Remote-SSH)
+#   - supervisord as PID-1 process manager (no systemd), tini for reaping
+#   - a tiny `systemctl` shim so course docs saying `sudo systemctl restart
+#     neo4j` still work (maps to supervisorctl)
+#
+# NOT inside (deliberately): a desktop/GUI (Neo4j Desktop, MySQL Workbench,
+# MongoDB Compass, Firefox). Web replacements: Neo4j Browser on :7474 and the
+# Dash app on :8050 reached through a per-student reverse-proxy URL.
+#
+# Persistent state: mount ONE volume at /data (DB files) and one at /home/student.
+# Draft only - not built/tested.
+# ---------------------------------------------------------------------------
+
+# Pin the base image (Ubuntu 24.04 "noble"). Replace tag with a digest in prod.
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG NEO4J_VERSION=1:5.26.*
+ARG MONGO_SERIES=8.0
+ARG STUDENT=student
+
+ENV LANG=C.UTF-8 \
+    TZ=America/Chicago \
+    VENV=/opt/cs411-venv \
+    PATH=/opt/cs411-venv/bin:$PATH
+
+# ---- Base tools + MySQL (Ubuntu archive ships MySQL 8.0 on noble) ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg tini supervisor sudo openssh-server \
+        less nano vim-tiny git unzip procps iproute2 \
+        python3 python3-venv python3-pip \
+        mysql-server-8.0 mysql-client-8.0 \
+        openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- MongoDB (official repo; server + shell + import/export tools) ---------
+RUN curl -fsSL https://www.mongodb.org/static/pgp/server-${MONGO_SERIES}.asc \
+        | gpg --dearmor -o /usr/share/keyrings/mongodb.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/${MONGO_SERIES} multiverse" \
+        > /etc/apt/sources.list.d/mongodb.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        mongodb-org-server mongodb-mongosh mongodb-database-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Neo4j 5.x LTS Community (includes cypher-shell and Neo4j Browser) -----
+# Note: Neo4j 5 uses Java 17 (Java 21 also supported by 5.26).
+RUN curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable 5" \
+        > /etc/apt/sources.list.d/neo4j.list \
+    && apt-get update \
+    && echo "neo4j neo4j/question select I ACCEPT" | debconf-set-selections \
+    && echo "neo4j neo4j/license note" | debconf-set-selections \
+    && apt-get install -y --no-install-recommends "neo4j=${NEO4J_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python environment matching student requirements.txt seen in SP26 ----
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv "$VENV" \
+    && "$VENV/bin/pip" install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# ---- Configuration ----------------------------------------------------------
+COPY my-lowmem.cnf      /etc/mysql/mysql.conf.d/zz-lowmem.cnf
+COPY mongod.conf        /etc/mongod.conf
+COPY neo4j-lowmem.conf  /etc/neo4j/neo4j-lowmem.conf
+COPY supervisord.conf   /etc/supervisor/conf.d/cs411.conf
+COPY entrypoint.sh      /usr/local/bin/entrypoint.sh
+COPY systemctl-shim.sh  /usr/local/bin/systemctl
+# Append low-memory overrides to neo4j.conf (later keys win).
+RUN cat /etc/neo4j/neo4j-lowmem.conf >> /etc/neo4j/neo4j.conf \
+    && chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/systemctl
+
+# ---- Student account (sudo: course docs use `sudo mysql`, `sudo cypher-shell`)
+# Sudo inside an unprivileged, user-namespaced container is acceptable: root in
+# the container is not root on the host. Drop if the platform forbids it.
+RUN useradd -m -s /bin/bash "$STUDENT" \
+    && echo "$STUDENT ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-student \
+    && chmod 0440 /etc/sudoers.d/90-student \
+    && mkdir -p /run/sshd /data \
+    && sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && echo "source $VENV/bin/activate" >> /home/$STUDENT/.bashrc
+
+VOLUME ["/data", "/home/student"]
+
+# 22 SSH | 8050 Dash app | 7474 Neo4j Browser/HTTP | 7687 Bolt
+# 3306/27017 normally stay internal (localhost only) - expose only if the
+# course needs remote DB access (e.g. teammate's app).
+EXPOSE 22 8050 7474 7687
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

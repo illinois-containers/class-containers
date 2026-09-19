@@ -1,0 +1,346 @@
+# =============================================================================
+# CS 433 / CSE 422 (Computer System Organization) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# CS 433 / CSE 422 — Computer System Organization (UIUC, Prof. Saugata Ghose)
+# Draft container image to replace the per-student VM-farm VM.
+#
+# DO NOT BUILD THIS UNVERIFIED IN PRODUCTION. It is a draft for discussion.
+# Open questions are listed in notes.md §6 and inline below as "QUESTION:".
+#
+# What this image is for
+#   * Grad track (T4/MCS) Labs G1-G4: build/modify gem5, run SE-mode ARM
+#     simulations, read m5out/stats.txt.
+#     https://courses.grainger.illinois.edu/cs433/gem5/
+#   * Undergrad track (T3/CSP) Lab U1+: pure Python 3 branch-predictor harness
+#     (bpred.py / base.py / static.py / local.py / meta.py + tiny CSV traces).
+#
+# Design goals
+#   * EVERYTHING preinstalled, so a student's first command is work, not apt.
+#   * gem5 PREBUILT in the image (/opt/gem5 with build/ARM/gem5.opt), so 96
+#     students do not each burn ~2 CPU-hours and ~3 GB RAM rebuilding it.
+#     They copy it into $HOME once; after that scons only does incremental
+#     rebuilds of the files they edited.
+#   * No GUI, no X11, no systemd, no root needed at runtime.
+#   * Small RSS: idle ~50 MB; see notes.md §5.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Base image
+# -----------------------------------------------------------------------------
+# Ubuntu 24.04 LTS: gem5 publishes an explicit apt dependency line for it
+# (https://www.gem5.org/documentation/general_docs/building).
+#
+# PIN THIS BY DIGEST before any real deployment, e.g.
+#   FROM ubuntu:24.04@sha256:<digest-you-verified-yourself>
+# I have deliberately NOT invented a digest here. Get the real one with:
+#   docker pull ubuntu:24.04 && docker inspect --format='{{index .RepoDigests 0}}' ubuntu:24.04
+FROM ubuntu:24.04 AS base
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=America/Chicago \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Headless plotting only. No Tk, no X11, no display.
+    MPLBACKEND=Agg
+
+# -----------------------------------------------------------------------------
+# System packages
+# -----------------------------------------------------------------------------
+# Group 1: gem5's own documented Ubuntu 24.04 dependency list, verbatim from
+#          https://www.gem5.org/documentation/general_docs/building
+#          (python3-tk is in that list; it pulls a little X11 but no server.
+#           Drop it if you want a stricter no-GUI image and gem5 still builds.)
+# Group 2: student quality-of-life + access (sshd, editors, gdb, time, etc.)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      # ---- gem5 build dependencies (gem5 >= v24.0, Ubuntu 24.04) ----
+      build-essential \
+      scons \
+      python3-dev \
+      git \
+      pre-commit \
+      zlib1g zlib1g-dev \
+      libprotobuf-dev protobuf-compiler libprotoc-dev \
+      libgoogle-perftools-dev \
+      libboost-all-dev \
+      libhdf5-serial-dev \
+      python3-pydot \
+      python3-venv \
+      python3-tk \
+      mypy \
+      m4 \
+      libcapstone-dev \
+      libpng-dev \
+      libelf-dev \
+      pkg-config \
+      wget \
+      cmake \
+      doxygen \
+      clang-format \
+      # ---- student tooling / access ----
+      openssh-server \
+      ca-certificates curl \
+      gdb \
+      less vim nano \
+      unzip zip \
+      bc file tree \
+      htop procps \
+      time \
+      python3-pip \
+      rsync \
+      tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Python packages for analysing/plotting simulation results
+# -----------------------------------------------------------------------------
+# NOTE [INFERRED]: no public CS 433 file imports numpy/pandas/matplotlib — Lab
+# U1's starter code is stdlib-only. But the labs report MPKI/IPC/speedup, so
+# plotting is very likely. These are cheap (~150 MB) and headless-safe.
+# QUESTION for instructor (notes.md §6 Q8): are these actually required?
+# PEP 668: Ubuntu 24.04 marks the system Python externally managed, so we
+# install into a dedicated venv rather than fighting it.
+ENV CS433_VENV=/opt/venv
+ENV PATH="${CS433_VENV}/bin:${PATH}"
+RUN python3 -m venv "${CS433_VENV}" && \
+    "${CS433_VENV}/bin/pip" install --no-cache-dir --upgrade pip && \
+    "${CS433_VENV}/bin/pip" install --no-cache-dir \
+      # Pin exact versions before production so results are reproducible
+      # across the whole class and across semesters.
+      matplotlib \
+      numpy \
+      pandas && \
+    find "${CS433_VENV}" -name '__pycache__' -type d -prune -exec rm -rf {} + && \
+    # Pre-build the matplotlib font cache as root so students don't each pay
+    # the ~10 s first-plot penalty (and don't write it into their home).
+    MPLCONFIGDIR=/opt/mplconfig "${CS433_VENV}/bin/python" -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot" && \
+    chmod -R a+rX /opt/mplconfig
+ENV MPLCONFIGDIR=/opt/mplconfig
+
+# =============================================================================
+# Stage: build gem5 once, here, so no student ever has to.
+# =============================================================================
+FROM base AS gem5build
+
+# QUESTION for instructor (notes.md §6 Q4): the course tutorial footer says
+# "Last updated September 13, 2025 for gem5 v25.1", but the sample output on
+# the example_configs page shows "gem5 version 25.0.0.1". Pin whichever the
+# semester actually uses, and prefer a COMMIT SHA over a tag for reproducibility.
+ARG GEM5_REPO=https://github.com/gem5/gem5.git
+ARG GEM5_REF=v25.1.0.0
+# ARM is what the course builds: the tutorial says students end up with
+# build/ARM/gem5.opt, produced by the course's own setup_vm script.
+ARG GEM5_ISA=ARM
+# Build parallelism. gem5 docs: allow >=1 GB RAM per job; the generated ISA
+# files can need ~1 GB each for g++. -j8 => give the BUILDER ~10 GB.
+ARG GEM5_JOBS=8
+
+RUN git clone --depth 1 --branch "${GEM5_REF}" "${GEM5_REPO}" /opt/gem5
+
+WORKDIR /opt/gem5
+# From-scratch build; gem5 docs warn single-threaded can take up to 2 hours.
+RUN scons "build/${GEM5_ISA}/gem5.opt" -j"${GEM5_JOBS}" && \
+    # Trim the fat we do not need to ship, but KEEP the object files: they are
+    # exactly what makes a student's first incremental `scons` fast.
+    rm -rf /opt/gem5/.git && \
+    du -sh /opt/gem5 /opt/gem5/build || true
+
+# =============================================================================
+# Stage: final runtime image
+# =============================================================================
+FROM base AS final
+
+ARG GEM5_ISA=ARM
+
+# Pristine, prebuilt gem5 tree. Students copy this into $HOME (see the
+# cs433-init-gem5 helper below) because they must MODIFY gem5 source
+# (Labs G2/G3/G4 add SimObjects and rebuild with `scons -j2 build/ARM/gem5.opt`).
+COPY --from=gem5build /opt/gem5 /opt/gem5
+RUN chmod -R a+rX /opt/gem5
+
+ENV GEM5_ROOT=/opt/gem5 \
+    GEM5_ISA=${GEM5_ISA}
+# Convenience: the prebuilt binary is on PATH for read-only experimentation.
+ENV PATH="/opt/gem5/build/${GEM5_ISA}:${PATH}"
+
+# -----------------------------------------------------------------------------
+# Shared, read-only course data
+# -----------------------------------------------------------------------------
+# Mount points, created empty. The intent (notes.md §5.2) is that these are ONE
+# shared read-only volume across all ~96 containers, not 150 GB per student:
+#   /opt/gem5-resources : pre-seeded gem5 resources so obtain_resource() never
+#                         hits the network mid-deadline.
+#   /srv/cs433          : course-provided traces / starter zips (Lab U1's four
+#                         trace files total only ~1.6 MB).
+RUN mkdir -p /opt/gem5-resources /srv/cs433 && chmod 0755 /opt/gem5-resources /srv/cs433
+ENV GEM5_RESOURCE_DIR=/opt/gem5-resources
+
+# -----------------------------------------------------------------------------
+# Helper scripts
+# -----------------------------------------------------------------------------
+# cs433-init-gem5: give the student their own writable, already-built gem5.
+#   cp --reflink=auto makes this near-instant and near-free on XFS/Btrfs.
+#   On ext4 it is a real copy (several GB) -- see notes.md §4 Workaround 1.
+RUN cat > /usr/local/bin/cs433-init-gem5 <<'EOF' && chmod 0755 /usr/local/bin/cs433-init-gem5
+#!/bin/sh
+# Copy the prebuilt gem5 tree into the student's home so they can edit and
+# incrementally rebuild it (scons -j2 build/ARM/gem5.opt).
+set -eu
+DEST="${1:-$HOME/gem5}"
+if [ -e "$DEST" ]; then
+  echo "cs433-init-gem5: $DEST already exists; refusing to overwrite." >&2
+  echo "Remove it or pass a different destination." >&2
+  exit 1
+fi
+echo "Copying /opt/gem5 -> $DEST (prebuilt, includes build/${GEM5_ISA:-ARM})..."
+cp -a --reflink=auto /opt/gem5 "$DEST"
+cd "$DEST" && git init -q 2>/dev/null || true
+echo "Done. Try:  cd $DEST && ./build/${GEM5_ISA:-ARM}/gem5.opt --version"
+EOF
+
+# cs433-info: one screen telling a student where everything is.
+RUN cat > /usr/local/bin/cs433-info <<'EOF' && chmod 0755 /usr/local/bin/cs433-info
+#!/bin/sh
+cat <<TXT
+CS 433 / CSE 422 container
+  Prebuilt gem5 (read-only):   /opt/gem5        (build/${GEM5_ISA:-ARM}/gem5.opt)
+  Your own copy:               run  cs433-init-gem5
+  gem5 resources (read-only):  \$GEM5_RESOURCE_DIR = ${GEM5_RESOURCE_DIR:-unset}
+  Course data (read-only):     /srv/cs433
+  Python (venv, headless):     $(command -v python3)
+  Plotting backend:            \$MPLBACKEND = ${MPLBACKEND:-unset}   (no GUI in this image)
+  Your persistent home:        \$HOME = ${HOME}
+TXT
+EOF
+
+# -----------------------------------------------------------------------------
+# SSH access (students expect SSH + VS Code Remote-SSH, as with the VMs)
+# -----------------------------------------------------------------------------
+# Key-based auth only; no passwords; no root login. Host keys are generated at
+# CONTAINER START into a persistent volume, NOT baked into the image -- baking
+# them would give every student the same host key.
+RUN mkdir -p /run/sshd /etc/ssh/keys && \
+    sed -i \
+      -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' \
+      -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+      -e 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' \
+      -e 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' \
+      -e 's/^#\?X11Forwarding.*/X11Forwarding no/' \
+      -e 's/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/' \
+      /etc/ssh/sshd_config && \
+    printf 'HostKey /etc/ssh/keys/ssh_host_ed25519_key\nHostKey /etc/ssh/keys/ssh_host_rsa_key\n' \
+      >> /etc/ssh/sshd_config
+
+# -----------------------------------------------------------------------------
+# Unprivileged student account
+# -----------------------------------------------------------------------------
+# NOTE: in production the UID should match the student's NFS/home UID so the
+# persistent home volume has the right ownership. 2000 is a placeholder.
+ARG STUDENT_USER=student
+ARG STUDENT_UID=2000
+RUN useradd --create-home --uid "${STUDENT_UID}" --shell /bin/bash "${STUDENT_USER}" && \
+    printf '\n# CS 433\nexport MPLBACKEND=Agg\nexport GEM5_ROOT=/opt/gem5\n[ -t 1 ] && cs433-info\n' \
+      >> "/home/${STUDENT_USER}/.bashrc"
+# NO sudo, NO wheel group: nothing in the course needs runtime root (notes.md §2).
+
+# Entrypoint: generate host keys if missing, install the student's authorized
+# key if one was mounted, then run sshd in the foreground as PID 1.
+RUN cat > /usr/local/bin/entrypoint.sh <<'EOF' && chmod 0755 /usr/local/bin/entrypoint.sh
+#!/bin/bash
+set -euo pipefail
+# Persistent, per-container host keys (mount /etc/ssh/keys as a volume).
+[ -f /etc/ssh/keys/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/keys/ssh_host_ed25519_key
+[ -f /etc/ssh/keys/ssh_host_rsa_key ]     || ssh-keygen -q -t rsa -b 4096 -N '' -f /etc/ssh/keys/ssh_host_rsa_key
+chmod 600 /etc/ssh/keys/ssh_host_*_key
+# Optional: seed the student's authorized_keys from a mounted file.
+STUDENT_HOME="$(getent passwd "${STUDENT_USER:-student}" | cut -d: -f6)"
+if [ -r /run/secrets/authorized_keys ]; then
+  install -d -m 700 -o "${STUDENT_USER:-student}" "${STUDENT_HOME}/.ssh"
+  install -m 600 -o "${STUDENT_USER:-student}" /run/secrets/authorized_keys "${STUDENT_HOME}/.ssh/authorized_keys"
+fi
+exec "$@"
+EOF
+
+EXPOSE 22
+USER root
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]
+
+# =============================================================================
+# RECOMMENDED `docker run` FLAGS
+# =============================================================================
+#
+# Build (do this on a BUILDER with >= 10 GB RAM and plenty of cores; gem5 is
+# compiled here, once, for the whole class):
+#
+#   docker build -t cs433:fa2026 \
+#     --build-arg GEM5_REF=v25.1.0.0 \
+#     --build-arg GEM5_JOBS=8 \
+#     -f Dockerfile .
+#
+# Run one student container:
+#
+#   docker run -d --name cs433-netid \
+#     --hostname fa26-cs433-netid \
+#     -p 2222:22 \
+#     \
+#     `# --- persistence: the semester's work must survive restarts ---` \
+#     -v cs433-netid-home:/home/student \
+#     -v cs433-netid-sshkeys:/etc/ssh/keys \
+#     \
+#     `# --- ONE shared read-only volume for all ~96 students, not 150 GB each ---` \
+#     -v cs433-gem5-resources:/opt/gem5-resources:ro \
+#     -v cs433-course-data:/srv/cs433:ro \
+#     \
+#     `# --- limits: see notes.md 5. RAM is a ceiling, not a reservation ---` \
+#     --memory=4g --memory-swap=4g \
+#     --cpus=2 --cpu-shares=1024 \
+#     --pids-limit=512 \
+#     \
+#     `# --- hardening: nothing here needs privilege ---` \
+#     --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID \
+#     --security-opt=no-new-privileges \
+#     --read-only=false \
+#     --restart=unless-stopped \
+#     cs433:fa2026
+#
+# Notes on those flags:
+#   --memory=4g      Matches the VM request, but is a CEILING. Steady state is
+#                    ~0.5-1 GB/student (notes.md 5.1). Drop to 3g once measured,
+#                    IF gem5 ships prebuilt. Do NOT drop below ~2.5g if students
+#                    are expected to build gem5 themselves (g++ can want ~1 GB
+#                    for a single generated ISA file).
+#   --memory-swap    Set equal to --memory so a runaway sim gets OOM-killed
+#                    promptly instead of thrashing the host.
+#   --cpus=2         Matches the 2 vCPU request. gem5 is single-threaded and
+#                    CPU-bound, so this mostly bounds `scons -j2`. The real
+#                    contention risk at deadline time is 96 busy cores, not RAM.
+#   --pids-limit     Stops a fork bomb / runaway `scons -j` from taking the node.
+#   NO --privileged, NO --device /dev/kvm, NO Docker-in-Docker: the course
+#   stays in gem5 SE mode ("For class, we will stick to SE mode" --
+#   https://courses.grainger.illinois.edu/cs433/gem5/part1/cache_config).
+#   If that ever changes (notes.md 6 Q1/Q2), revisit.
+#
+# Undergrad-only (T3/CSP) students need almost none of this: their Lab U1 is
+# stdlib Python over 1.6 MB of traces. Consider a second, ~150 MB image, or the
+# same image with --memory=512m.
+# =============================================================================

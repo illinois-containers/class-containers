@@ -1,0 +1,99 @@
+# =============================================================================
+# CS 460 / ECE 419 (Security Laboratory) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 460 / ECE 419 Security Laboratory — DRAFT student workstation image (not built/tested)
+#
+# Goal: VM-like Linux environment with network-security / sysadmin / detection tools pre-installed.
+# Modeled on the course's own OT lab tools image (patsec/uiuc-turbine Dockerfile.tools, Debian bookworm +
+# openbox + TigerVNC + noVNC + wireshark + dsniff + iptables + mitmproxy).
+#
+# Build:   docker build -t cs460-ws .                       (CLI only)
+#          docker build --build-arg GUI=1 -t cs460-ws:gui . (adds noVNC desktop for Wireshark)
+#          docker build --build-arg SYSTEMD=1 ...           (for sysbox runtime: systemd as PID 1)
+#
+# Run (plain runc, no inner docker, least privilege):
+#   docker network create --internal cs460-<netid>
+#   docker run -d --name cs460-<netid> --hostname cs460 --network cs460-<netid> \
+#     --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,KILL,NET_BIND_SERVICE,NET_RAW,NET_ADMIN \
+#     --sysctl net.ipv4.ip_forward=1 --memory 1g --pids-limit 512 cs460-ws
+# Run (sysbox, if systemd or docker-in-container for the OT compose lab is needed):
+#   docker run --runtime=sysbox-runc -d --memory 3g ... cs460-ws  (built with SYSTEMD=1)
+# NEVER use --privileged or --network host (the upstream Gitpod compose does; rewrite it).
+
+# Pin to a dated tag (verify the tag exists / prefer a digest before building)
+FROM debian:bookworm-20250811-slim
+
+ARG GUI=0
+ARG SYSTEMD=0
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Wireshark: allow non-root capture via dumpcap group (root works regardless)
+RUN echo "wireshark-common wireshark-common/install-setuid boolean true" | debconf-set-selections
+
+# --- Core CLI: sysadmin + networking + traffic analysis + firewall + attack/defense basics ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl wget git sudo less man-db bash-completion \
+      vim nano tmux htop procps psmisc lsof strace file unzip jq \
+      openssh-client openssh-server \
+      iproute2 iputils-ping traceroute mtr-tiny dnsutils whois netcat-openbsd socat \
+      bridge-utils ethtool arping arp-scan \
+      tcpdump tshark ngrep nmap \
+      iptables nftables ufw \
+      dsniff ettercap-text-only \
+      python3 python3-pip python3-venv python3-scapy \
+      auditd rsyslog cron \
+      acl passwd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Detection engineering / IDS (INFERRED need; Suricata is ~modest RAM idle, Zeek not in bookworm main repos).
+RUN apt-get update && apt-get install -y --no-install-recommends suricata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python tooling used by the OT lab (mitmproxy for AITM) + Modbus client for OT/IoT modules
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      mitmproxy pymodbus sigma-cli
+
+# Optional GUI: lightweight openbox + TigerVNC + noVNC (browser access on :8080/vnc.html), Wireshark GUI.
+RUN if [ "$GUI" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        wireshark openbox tint2 lxterminal tigervnc-standalone-server novnc websockify \
+        supervisor xdg-utils fonts-dejavu-core firefox-esr \
+      && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+# Optional systemd (only meaningful under sysbox-runc; plain runc would need extra privileges)
+RUN if [ "$SYSTEMD" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \
+      && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+# Optional inner Docker for the OT turbine compose lab (requires sysbox runtime at run time):
+#   RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-compose \
+#       && rm -rf /var/lib/apt/lists/*
+# Better: have the orchestrator launch patsec compose stack as sibling containers on the student's network,
+# with a shared (capped) OpenSearch/Grafana.
+
+# Student user with sudo (container root is userns-remapped on the host)
+RUN useradd -m -s /bin/bash -G sudo,wireshark student \
+    && echo 'student ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/student \
+    && chmod 0440 /etc/sudoers.d/student
+
+WORKDIR /home/student
+EXPOSE 22 8080
+
+# Default: stay alive for `docker exec`/SSH. GUI builds should instead run supervisord (vnc + novnc + openbox);
+# SYSTEMD builds should use CMD ["/sbin/init"].
+CMD ["sleep", "infinity"]

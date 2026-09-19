@@ -1,0 +1,54 @@
+# CS 425 / ECE 428 (Distributed Systems) — untested draft (example cluster compose file), generated from public course materials; never run. Discussion starter only — see CommentsForClass.md in this directory; the working example is cs341/fa26/Dockerfile.
+
+# CS 425 / ECE 428 -- example "cluster" for ONE MP group (group 01).
+# Replaces ~10 VMs (fa26-cs425-g01-01 .. -10) with 10 containers on a private,
+# group-only network. Production would template this per group (or use a
+# Kubernetes namespace + NetworkPolicy per group, spreading pods across hosts
+# for realistic latency measurements).
+#
+# Students SSH to node 01 (published port / bastion over VPN), then ssh or run
+# their daemons across nodes by hostname. `kill -9` inside a node == crash.
+
+x-node: &node
+  image: cs425-node:fa26
+  networks: [g01]
+  environment:
+    STUDENT_USERS: "netid1 netid2"
+    AUTHORIZED_KEYS_DIR: /keys
+    GROUP_PRIVATE_KEY: /keys/group_id_ed25519
+  volumes:
+    - ./keys/g01:/keys:ro
+  restart: unless-stopped
+  # No privileges needed: specs forbid tc-based drops; app-level drops only.
+  cap_drop: [NET_RAW, SYS_ADMIN, MKNOD]
+  # sudo inside works only because no-new-privileges is NOT set; run under a
+  # rootless runtime or dockerd userns-remap so container root != host root.
+  mem_limit: 768m          # MP1-MP3 worker nodes; raise to 2-3g during MP4 if Spark/Hadoop
+  mem_reservation: 64m
+  cpus: 1.0
+  pids_limit: 2048
+  tmpfs:
+    - /tmp:size=1g
+
+services:
+  # Service names double as DNS names on the group network (like VM hostnames).
+  fa26-cs425-g01-01:
+    <<: *node
+    hostname: fa26-cs425-g01-01
+    mem_limit: 2g          # dev/build node (VS Code Remote attaches here)
+    mem_reservation: 256m
+    ports: ["22001:22"]    # or reach via bastion; never expose other nodes
+  fa26-cs425-g01-02: { <<: *node, hostname: fa26-cs425-g01-02 }
+  fa26-cs425-g01-03: { <<: *node, hostname: fa26-cs425-g01-03 }
+  fa26-cs425-g01-04: { <<: *node, hostname: fa26-cs425-g01-04 }
+  fa26-cs425-g01-05: { <<: *node, hostname: fa26-cs425-g01-05 }
+  fa26-cs425-g01-06: { <<: *node, hostname: fa26-cs425-g01-06 }
+  fa26-cs425-g01-07: { <<: *node, hostname: fa26-cs425-g01-07 }
+  fa26-cs425-g01-08: { <<: *node, hostname: fa26-cs425-g01-08 }
+  fa26-cs425-g01-09: { <<: *node, hostname: fa26-cs425-g01-09 }
+  fa26-cs425-g01-10: { <<: *node, hostname: fa26-cs425-g01-10 }
+
+networks:
+  g01:
+    driver: bridge
+    internal: false        # needs outbound NAT for git clone (GitHub/GitLab)

@@ -1,0 +1,188 @@
+# =============================================================================
+# CS 233 (Computer Architecture) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 233 (Computer Architecture, UIUC) — DRAFT container image
+#
+# Status: DRAFT. NOT BUILT, NOT TESTED. See notes.md for what is confirmed vs inferred.
+#
+# Scope: replaces the single shared course/staff VM (8 vCPU / 4 GB / 100 GB), which we believe is a
+# batch/build box (SPIMbot tournament runs, Verilog regression, staff builds) rather than a
+# per-student login machine. See notes.md §3.
+#
+# Headless on purpose. QtSpimbot and gtkwave are X11/Qt GUI apps and are deliberately NOT installed:
+#   - waveform viewing is done client-side with cs233's `fliplot` VS Code extension
+#     (https://github.com/cs233/fliplot)
+#   - if a real GUI is ever needed, the course already ships a VNC container for it
+#     (https://github.com/cs233/ubuntu-vnc-desktop-spimbot)
+#
+# KNOWN BLOCKER: `spim-vasm` (the CS 233 SPIM fork, invoked as `spim-vasm -vasm memory -file x.s` in
+# the lab Makefiles) has no public package or source we could find. Stock Ubuntu `spim` does NOT
+# have -vasm. The image is not usable for lab builds until that binary is supplied — see the
+# clearly marked section near the bottom.
+
+# ---------------------------------------------------------------------------
+# Base image
+# ---------------------------------------------------------------------------
+# Ubuntu 22.04 LTS: matches the LTS releases the course's own VNC/spimbot image supports
+# (18.04/20.04/22.04, per https://github.com/cs233/ubuntu-vnc-desktop-spimbot).
+#
+# PIN BY DIGEST before any real use. We deliberately do not invent a sha256 here; resolve the
+# current one on the build host and replace this line:
+#     docker pull ubuntu:22.04 && docker inspect --format='{{index .RepoDigests 0}}' ubuntu:22.04
+#     FROM ubuntu@sha256:<paste the digest you resolved>
+FROM ubuntu:22.04
+
+LABEL org.opencontainers.image.title="cs233-arch" \
+      org.opencontainers.image.description="UIUC CS 233 Computer Architecture toolchain (draft, headless)" \
+      org.opencontainers.image.source="https://github.com/cs233"
+
+# Non-interactive apt; keep the C locale predictable for simulator output diffs.
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=America/Chicago
+
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+# Single RUN layer; apt lists removed in the same layer so they never land in the image.
+# --no-install-recommends keeps GUI/doc dependencies out (important: iverilog and gtkwave both
+# pull in a lot of X11 via recommends).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      # --- Verilog: confirmed from the Lab4/Lab8 Makefiles (`iverilog -o $@ -Wall $^`).
+      # The `iverilog` package also provides `vvp`, the simulation runtime that executes the
+      # compiled output, and `vcd` tooling. Testbenches write .vcd traces.
+      iverilog \
+      # --- C / C++: Lab12 is C++ (filter.cpp, transpose.cpp) — the cache/locality lab.
+      # build-essential = gcc, g++, make, libc dev headers, dpkg-dev.
+      build-essential \
+      # --- MIPS assembly / simulation.
+      # Stock SPIM. NOTE: this is NOT sufficient for the labs — see the spim-vasm section below.
+      # Installed anyway so `spim` exists for sanity checks and for plain MIPS programs.
+      spim \
+      # --- Python: PrairieLearn question/grader tooling, and generally the glue language for
+      # tournament harnesses and result tabulation. python3-venv so staff can make isolated envs
+      # without needing root at runtime.
+      python3 \
+      python3-pip \
+      python3-venv \
+      # --- Build/fetch utilities for staff workflows (building the SPIM fork, JsSpim, etc.).
+      git \
+      ca-certificates \
+      curl \
+      wget \
+      unzip \
+      xz-utils \
+      pkg-config \
+      cmake \
+      # --- Debug / profiling. gdb for assembly and C++ debugging; valgrind is useful for the
+      # cache-locality lab. Drop valgrind if image size matters.
+      gdb \
+      valgrind \
+      # --- coreutils provides `stdbuf`, which BOTH lab Makefiles use to line-buffer simulator
+      # output (`UNBUFFER = stdbuf -oL`). It is in the base image, but bsdutils provides `script`,
+      # the Makefiles' documented fallback. Cheap insurance.
+      bsdutils \
+      # --- Remote access. Only needed if humans log in; see notes.md §7 Q5. Remove both if this
+      # is a pure batch container driven by `docker exec`.
+      openssh-server \
+      # --- Minimal editors/pagers so an interactive session is not painful.
+      vim-tiny \
+      less \
+      # --- Parallelism for tournament-style batch runs across the 8 vCPUs.
+      parallel \
+      # --- Process inspection during RAM measurement (testplan.md §6).
+      procps \
+      time \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# cs233's vim MIPS syntax files (https://github.com/cs233/vim-mips) are a nice-to-have for
+# interactive use. Not installed: adds a network dependency at build time for cosmetic benefit.
+# Uncomment if staff want it.
+# RUN git clone --depth=1 https://github.com/cs233/vim-mips /opt/vim-mips
+
+# ---------------------------------------------------------------------------
+# spim-vasm — UNRESOLVED, MUST BE SUPPLIED
+# ---------------------------------------------------------------------------
+# The CS 233 lab Makefiles call:
+#     spim-vasm -vasm memory -file test.s
+# which emits memory.text.dat / memory.data.dat / memory.ktext.dat / memory.kdata.dat for the
+# Verilog testbenches to $readmemh. Stock `spim` has no -vasm flag, so the labs WILL NOT BUILD
+# until this binary is provided. It comes from the course's own SPIM fork
+# (see https://github.com/cs233/spimbot_release and https://github.com/cs233/spimbot-binaries,
+# both of which returned 404 to unauthenticated fetches).
+#
+# Pick ONE of these once the instructor answers notes.md §7 Q4, then delete the guard at the end.
+#
+# Option A — copy a prebuilt binary supplied by the course (preferred: reproducible, no build deps):
+#   COPY --chmod=0755 vendor/spim-vasm /usr/local/bin/spim-vasm
+#   COPY vendor/exceptions.s /usr/local/share/spim/exceptions.s
+#   ENV SPIM_EXCEPTION_HANDLER=/usr/local/share/spim/exceptions.s
+#
+# Option B — build the fork from source (needs the repo URL and a pinned commit):
+#   RUN git clone https://github.com/cs233/<spim-fork>.git /tmp/spim \
+#    && git -C /tmp/spim checkout <PINNED_COMMIT_SHA> \
+#    && make -C /tmp/spim/spim -j"$(nproc)" \
+#    && make -C /tmp/spim/spim install \
+#    && rm -rf /tmp/spim
+#
+# Option C — install a course-provided .deb:
+#   COPY vendor/spim-vasm_<version>_amd64.deb /tmp/
+#   RUN apt-get install -y --no-install-recommends /tmp/spim-vasm_*.deb \
+#    && rm -f /tmp/*.deb && rm -rf /var/lib/apt/lists/*
+#
+# Guard: fail loudly at build time rather than shipping a silently broken image.
+# Delete this RUN once one of the options above is in place.
+RUN echo '#!/bin/sh' > /usr/local/bin/spim-vasm \
+ && echo 'echo "spim-vasm is NOT installed in this draft image. See the Dockerfile. (notes.md 7.Q4)" >&2' >> /usr/local/bin/spim-vasm \
+ && echo 'exit 127' >> /usr/local/bin/spim-vasm \
+ && chmod 0755 /usr/local/bin/spim-vasm
+
+# ---------------------------------------------------------------------------
+# NOT installed, on purpose
+# ---------------------------------------------------------------------------
+#   gtkwave, qtspim, qtspimbot, xorg, VNC  -> GUI; use fliplot (VS Code) or the course VNC image
+#   docker / docker-compose                -> only needed if the spimbot_release workflow runs
+#                                             HERE. If so, do NOT install a client and bind the
+#                                             host socket (host-root escalation). Run this
+#                                             container under sysbox and install docker.io then.
+#                                             See notes.md §4.
+#   systemd                                -> nothing in this workload needs it
+#   LC-3 tools                             -> CS 233 is a MIPS course; LC-3 is ECE 120
+
+# ---------------------------------------------------------------------------
+# Runtime user and workspace
+# ---------------------------------------------------------------------------
+# Unprivileged by default. UID 1000 so a bind-mounted host directory lines up with a typical
+# host user without chown gymnastics.
+RUN useradd --create-home --shell /bin/bash --uid 1000 cs233 \
+ && mkdir -p /work \
+ && chown cs233:cs233 /work
+
+# Mount the persistent volume (submissions, tournament logs, build artifacts) here.
+VOLUME ["/work"]
+
+# sshd needs this directory to exist; harmless if sshd is never started.
+RUN mkdir -p /run/sshd
+
+USER cs233
+WORKDIR /work
+
+# Batch-oriented default. For an interactive/ssh deployment, override with sshd:
+#   docker run ... cs233-arch sh -c 'sudo /usr/sbin/sshd -D'   (requires sudo + host keys + a key
+#   in /home/cs233/.ssh/authorized_keys — see testplan.md §4)
+CMD ["/bin/bash"]

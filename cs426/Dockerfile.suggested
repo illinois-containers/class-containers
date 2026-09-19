@@ -1,0 +1,96 @@
+# =============================================================================
+# CS 426 (Compiler Construction) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 426 (Compiler Construction) student environment - DRAFT, not built/tested.
+# Mirrors the FA25 VM as described in the handouts:
+#   gcc 11.4 (=> Ubuntu 22.04), LLVM 19 at /usr/lib/llvm-19, clang-19, lld, flex, bison,
+#   make, cmake, gdb; MP4 builds a patched llvm-project-19.1.6 `llc` from source.
+# See notes.md for sources and open questions.
+
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LLVM_MAJOR=19
+
+# --- Base toolchain for MP1-MP3 (flex/bison lexer+parser, g++ codegen, Makefiles) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates gnupg wget curl xz-utils patch \
+        build-essential g++ gcc make \
+        flex bison libfl-dev \
+        cmake ninja-build \
+        gdb valgrind \
+        git less vim-tiny nano \
+        openssh-server \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- LLVM 19 from apt.llvm.org (installs to /usr/lib/llvm-19, as the handouts expect) ---
+# Provides clang-19, clang++-19, lld-19, opt/llc/llvm-as/llvm-dis, and LLVM dev headers +
+# CMake config (needed for the Unit Project's out-of-tree passes: find_package(LLVM 19)).
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-${LLVM_MAJOR} lld-${LLVM_MAJOR} llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \
+        libclang-rt-${LLVM_MAJOR}-dev zlib1g-dev libzstd-dev libedit-dev libxml2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Handouts call plain `opt`, `llc`, `llvm-as`, `llvm-dis` (Makefile.common) and `clang-19`.
+ENV PATH=/usr/lib/llvm-${LLVM_MAJOR}/bin:${PATH}
+
+# --- OPTIONAL (recommended, pending instructor approval): pre-built patched LLVM for MP4 ---
+# MP4 requires patching llvm-project-19.1.6 and building `llc`. Doing that per student costs
+# ~6-8 GB RAM peak at -j4, ~10 GB disk, ~20 min CPU. Pre-building once here (shared image layer)
+# means a student only recompiles RegAllocSimple.cpp and relinks a shared lib.
+# Requires the course's simple-regalloc-19.1.6.patch + RegAllocSimple.cpp in the build context.
+# Students would need a writable copy (e.g. cp -a or an overlay) of /opt/llvm19 in $HOME.
+#
+# COPY mp4_handout/ /tmp/mp4_handout/
+# RUN cd /opt && wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.6/llvm-project-19.1.6.src.tar.xz \
+#     && tar xf llvm-project-19.1.6.src.tar.xz && rm llvm-project-19.1.6.src.tar.xz \
+#     && mv llvm-project-19.1.6.src llvm19 && cd llvm19 \
+#     && patch -p1 < /tmp/mp4_handout/simple-regalloc-19.1.6.patch \
+#     && cp /tmp/mp4_handout/RegAllocSimple.cpp llvm/lib/CodeGen/ \
+#     && cmake -G Ninja -B build -S llvm \
+#          -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 \
+#          -DLLVM_USE_LINKER=lld -DCMAKE_BUILD_TYPE=Debug \
+#          -DLLVM_TARGETS_TO_BUILD=X86 -DLLVM_INCLUDE_BENCHMARKS=OFF \
+#          -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+#          -DBUILD_SHARED_LIBS=ON -DLLVM_USE_SPLIT_DWARF=ON \
+#          -DLLVM_PARALLEL_LINK_JOBS=1 \
+#     && ninja -C build -j4 llc \
+#     && rm -rf /tmp/mp4_handout
+
+# Student-side build defaults that keep MP4 peak RAM in check if they build it themselves.
+ENV MAKEFLAGS=-j4 \
+    CMAKE_BUILD_PARALLEL_LEVEL=4
+
+# --- Course tree: bind-mount read-only at runtime instead of baking in ---
+#   docker run -v /srv/class_cs426:/class_cs426:ro ...
+RUN mkdir -p /class_cs426
+
+# --- SSH access (VS Code Remote-SSH / terminal). No sudo for students (matches VM policy). ---
+RUN mkdir -p /run/sshd \
+    && sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config \
+    && useradd -m -s /bin/bash student
+# Student's authorized_keys + home should come from a persistent volume at /home/student.
+
+EXPOSE 22
+# Suggested runtime: --memory=8g --memory-reservation=2g --cpus=4
+#   (add --cap-add=SYS_PTRACE only if gdb attach fails under the runtime's seccomp profile)
+CMD ["/usr/sbin/sshd", "-D", "-e"]

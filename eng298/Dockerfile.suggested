@@ -1,0 +1,122 @@
+# =============================================================================
+# ENG 298 (CYB) and ENG 498 (FSA) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# ENG 298 CYB + ENG 498 FSA — DRAFT student image (NOT built, NOT tested)
+#
+# WHY THIS IS A THIN LAYER ON TOP OF THE CS 460 IMAGE
+# ---------------------------------------------------
+# Same instructor (Casey O'Brien), same ITI course family, and the topic lists overlap heavily with
+# CS 460 (CLI, networking, traffic capture, firewalls, crypto/PKI, hardening). The CS 460 draft image in
+# ../cs460/Dockerfile already installs that whole CLI base, so we reuse it instead of duplicating it.
+# Build ../cs460/Dockerfile first as `secure-base` (or retag it):
+#
+#   docker build -t secure-base:bookworm ../cs460            # CLI base
+#   docker build -t eng298 --build-arg PROFILE=eng298 .       # ENG 298 CYB  (light)
+#   docker build -t eng498fsa --build-arg PROFILE=fsa .       # ENG 498 FSA  (sysadmin, needs systemd)
+#
+# WHAT IS *NOT* REUSED
+# --------------------
+# ENG 498 FSA is a systems-administration course ("server services", "identity management", "automation",
+# "file systems") — it needs systemd as PID 1, real service daemons, and config-management tooling that
+# CS 460 does not. That is the PROFILE=fsa layer below, and it REQUIRES the sysbox-runc runtime.
+# ENG 298 CYB needs almost nothing beyond the base; PROFILE=eng298 is nearly a no-op on purpose.
+#
+# RUN (ENG 298 — plain runc, least privilege):
+#   docker network create --internal eng298-<netid>
+#   docker run -d --name eng298-<netid> --hostname eng298 --network eng298-<netid> \
+#     --cap-drop ALL --cap-add CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,KILL,NET_BIND_SERVICE,NET_RAW \
+#     --memory 1g --memory-swap 1g --pids-limit 512 -v eng298-<netid>-home:/home/student eng298
+#
+# RUN (ENG 498 FSA — sysbox, systemd as PID 1, still NO --privileged):
+#   docker run -d --runtime=sysbox-runc --name fsa-<netid> --hostname fsa --network fsa-<netid> \
+#     --memory 2g --memory-swap 2g --pids-limit 1024 -v fsa-<netid>-home:/home/student eng498fsa
+#
+# NEVER use --privileged or --network host.
+#
+# UNRESOLVED (see notes.md): ENG 498 FSA explicitly covers "both Linux and Windows-based systems".
+# NOTHING IN THIS IMAGE CAN PROVIDE WINDOWS. Windows Server / Active Directory / real PowerShell labs
+# need real VMs or the existing Infosec Learning platform. pwsh below is syntax practice only.
+
+ARG BASE=secure-base:bookworm
+FROM ${BASE}
+
+ARG PROFILE=eng298
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# ENG 298 CYB: survey course. Modules = threats, GRC, IdAM, physical security,
+# crypto/PKI, security engineering, security testing, security operations.
+# The CS 460 base already has nmap/tcpdump/python/openssl. Add only crypto/PKI
+# and log-review odds and ends. [INFERRED tool list — no ENG 298 lab manual is public.]
+# ---------------------------------------------------------------------------
+RUN if [ "$PROFILE" = "eng298" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        openssl gnupg2 easy-rsa ca-certificates \
+        hashcat john \
+        pwgen xxd bsdextrautils \
+      && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+# ---------------------------------------------------------------------------
+# ENG 498 FSA: "installation, configuration, upkeep and reliable operation of
+# computing systems (especially multi-user systems), both on-premises and in the
+# cloud"; topics: commands/CLI, file systems, automation, identity management,
+# access control, network management, server services, systems security.
+# REQUIRES --runtime=sysbox-runc so /sbin/init (systemd) can be PID 1 unprivileged.
+# ---------------------------------------------------------------------------
+RUN if [ "$PROFILE" = "fsa" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus systemd-timesyncd \
+        openssh-server rsyslog cron logrotate at \
+        sudo acl attr quota quotatool \
+        e2fsprogs xfsprogs dosfstools lvm2 parted rsync \
+        nginx bind9 bind9-utils isc-dhcp-server samba nfs-kernel-server vsftpd postfix \
+        postgresql \
+        sssd sssd-tools libpam-sss ldap-utils slapd krb5-user \
+        ansible git make \
+        auditd aide lynis libpam-pwquality apparmor apparmor-utils fail2ban \
+        awscli \
+      && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+# PowerShell Core: lets students practice PowerShell *syntax* on Linux.
+# It does NOT substitute for Windows Server / AD administration. [INFERRED usefulness]
+#RUN if [ "$PROFILE" = "fsa" ]; then \
+#      curl -fsSL https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -o /tmp/ms.deb \
+#      && dpkg -i /tmp/ms.deb && rm /tmp/ms.deb \
+#      && apt-get update && apt-get install -y --no-install-recommends powershell \
+#      && rm -rf /var/lib/apt/lists/* ; \
+#    fi
+
+# Optional cloud CLIs beyond awscli (the course says "and in the cloud"):
+#   az  -> https://aka.ms/InstallAzureCLIDeb   |   gcloud -> google-cloud-cli apt repo
+# Left commented: only add once the instructor confirms which cloud is used.
+
+# Don't ship enabled services: students are supposed to enable them themselves.
+RUN if [ "$PROFILE" = "fsa" ]; then \
+      systemctl disable nginx bind9 smbd nmbd nfs-server vsftpd postfix postgresql isc-dhcp-server slapd 2>/dev/null || true ; \
+    fi
+
+# sshd host keys are generated at first boot, not baked into the image.
+RUN rm -f /etc/ssh/ssh_host_*_key* 2>/dev/null || true
+
+WORKDIR /home/student
+EXPOSE 22
+
+# ENG 298 profile inherits the base CMD (sleep infinity + `docker exec`/sshd).
+# FSA profile must boot systemd; uncomment for that build, or override with
+#   docker run ... eng498fsa /sbin/init
+#CMD ["/sbin/init"]

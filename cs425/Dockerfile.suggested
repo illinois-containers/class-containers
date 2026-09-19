@@ -1,0 +1,150 @@
+# =============================================================================
+# CS 425 / ECE 428 (Distributed Systems) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# syntax=docker/dockerfile:1.7
+# -----------------------------------------------------------------------------
+# CS 425 / ECE 428 Distributed Systems -- DRAFT per-node image
+#
+# One container == one former VM ("machine"). Each MP group of 2 students gets
+# ~10 of these on a private per-group network (see docker-compose.yml).
+# Everything the MPs need is preinstalled so students never need real root.
+#
+# Sources for requirements: see notes.md in this directory.
+#   - Languages: C/C++, Go, Java, Python, Rust (CS425 FA26 MP1/MP2; ECE428 SP26)
+#   - Go 1.22.9 was the SP26 VM default (ECE428 SP26 MP2 spec)
+#   - Raft MP uses `go test -race` (needs gcc for cgo race detector)
+#   - gRPC/RPC optional (CS425 MP2 mentions gRPC)
+#   - MP4 historically compared against Hadoop / Spark Streaming [INFERRED]
+#
+# NOT built/tested. Build:  docker build -t cs425-node:fa26 .
+#   Optional MP4 extras:     --build-arg INSTALL_SPARK=true --build-arg INSTALL_HADOOP=true
+# -----------------------------------------------------------------------------
+
+# Pinned base (Ubuntu 24.04 LTS, dated tag). Swap for rockylinux:9 if EngrIT's
+# template is RHEL-family; package names would need translating.
+# For reproducibility, replace with a digest pin once built, e.g.
+#   FROM ubuntu:24.04@sha256:<digest from `docker buildx imagetools inspect ubuntu:24.04`>
+FROM ubuntu:24.04 AS base
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.22.9
+ARG RUST_TOOLCHAIN=stable
+ARG INSTALL_RUST=true
+ARG INSTALL_SPARK=false
+ARG SPARK_VERSION=3.5.5
+ARG INSTALL_HADOOP=false
+ARG HADOOP_VERSION=3.4.1
+ARG TARGETARCH=amd64
+
+ENV LANG=C.UTF-8 \
+    TZ=America/Chicago
+
+# --- OS packages: toolchains, networking/debug utilities, sshd, no GUI -------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # init + remote access
+        tini openssh-server openssh-client sudo ca-certificates tzdata locales \
+        # C / C++ toolchain, build tools, debuggers
+        build-essential gcc g++ gdb make cmake pkg-config valgrind strace \
+        libgtest-dev libgmock-dev \
+        # gRPC / protobuf for C++ (and protoc for all languages)
+        protobuf-compiler protobuf-compiler-grpc libprotobuf-dev libgrpc++-dev \
+        # Java (JDK 17 LTS: works with Spark 3.5 and Hadoop 3.4 clients) + build tools
+        openjdk-17-jdk-headless maven \
+        # Python 3 + common libs used for MP scripts and report plots
+        python3 python3-pip python3-venv python3-grpcio python3-protobuf \
+        python3-matplotlib python3-numpy \
+        # everyday CLI: editors, multiplexers, VCS, process tools (kill -9, ps)
+        git vim-nox nano tmux less htop procps psmisc curl wget rsync unzip xz-utils \
+        # networking diagnostics (no tc/iptables use required by specs)
+        iproute2 iputils-ping netcat-openbsd dnsutils net-tools \
+        # MP1 "distributed grep" relies on GNU grep (-E); present in base, listed for clarity
+        grep \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
+
+# --- Go (pinned tarball, matches VM default) ----------------------------------
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+      | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/opt/gotools/bin:$PATH
+# Go protoc plugins for students using gRPC in Go (versions compatible with Go 1.22)
+RUN GOBIN=/opt/gotools/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache \
+      go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 && \
+    GOBIN=/opt/gotools/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache \
+      go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1 && \
+    rm -rf /tmp/gopath /tmp/gocache
+
+# --- Rust (optional; recommended language in CS425 FA26) ----------------------
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN if [ "$INSTALL_RUST" = "true" ]; then \
+      curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+        --default-toolchain "$RUST_TOOLCHAIN" --no-modify-path && \
+      chmod -R a+rwX /opt/cargo /opt/rustup ; \
+    fi
+
+# --- MP4 extras (optional): Spark / Hadoop for comparison experiments ---------
+# Kept off by default: adds ~700 MB image size (disk only, not RAM).
+RUN if [ "$INSTALL_SPARK" = "true" ]; then \
+      curl -fsSL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop3.tgz" \
+        | tar -C /opt -xz && ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop3 /opt/spark ; \
+    fi && \
+    if [ "$INSTALL_HADOOP" = "true" ]; then \
+      curl -fsSL "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
+        | tar -C /opt -xz && ln -s /opt/hadoop-${HADOOP_VERSION} /opt/hadoop && \
+        rm -rf /opt/hadoop/share/doc ; \
+    fi
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-${TARGETARCH} \
+    SPARK_HOME=/opt/spark HADOOP_HOME=/opt/hadoop \
+    PATH=$PATH:/opt/spark/bin:/opt/spark/sbin:/opt/hadoop/bin:/opt/hadoop/sbin
+# Sensible JVM default for memory-limited containers (students may override).
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=50 -XX:+UseSerialGC"
+
+# --- sshd configuration: key-only auth, no systemd ----------------------------
+RUN mkdir -p /run/sshd && \
+    sed -i -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+           -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    rm -f /etc/ssh/ssh_host_*   # host keys generated at first start, not baked in
+
+# --- Entrypoint: create the group's login user(s), install keys, run sshd -----
+# Env (set by orchestrator):
+#   STUDENT_USERS="netid1 netid2"          login accounts (group of 2)
+#   AUTHORIZED_KEYS_DIR=/keys              mounted dir with <netid>.pub files
+#   GROUP_PRIVATE_KEY=/keys/group_id_ed25519  (optional) shared intra-group key so
+#                                          demo scripts can ssh node->node
+COPY --chmod=0755 <<'EOF' /usr/local/bin/node-entrypoint
+#!/bin/sh
+set -eu
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A >/dev/null
+for u in ${STUDENT_USERS:-student}; do
+  id "$u" >/dev/null 2>&1 || useradd -m -s /bin/bash "$u"
+  # "sudo" is only meaningful inside a user-namespaced, unprivileged container.
+  echo "$u ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$u"
+  mkdir -p /home/$u/.ssh
+  if [ -d "${AUTHORIZED_KEYS_DIR:-/keys}" ]; then
+    cat "${AUTHORIZED_KEYS_DIR:-/keys}"/*.pub > /home/$u/.ssh/authorized_keys 2>/dev/null || true
+  fi
+  if [ -n "${GROUP_PRIVATE_KEY:-}" ] && [ -f "$GROUP_PRIVATE_KEY" ]; then
+    cp "$GROUP_PRIVATE_KEY" /home/$u/.ssh/id_ed25519
+    printf 'Host *\n  StrictHostKeyChecking accept-new\n' > /home/$u/.ssh/config
+  fi
+  chown -R "$u:$u" /home/$u/.ssh && chmod 700 /home/$u/.ssh && chmod 600 /home/$u/.ssh/* 2>/dev/null || true
+done
+exec /usr/sbin/sshd -D -e
+EOF
+
+EXPOSE 22
+# Students pick arbitrary TCP/UDP ports for their daemons; all are open inside
+# the group network (no EXPOSE needed for intra-network traffic).
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/node-entrypoint"]

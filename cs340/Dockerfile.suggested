@@ -1,0 +1,85 @@
+# =============================================================================
+# CS 340 (Introduction to Computer Systems) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 340 (Intro to Computer Systems) — draft "VM-like" student container
+#
+# Goal: replace the fa26-cs340-NNN VM Farm VM (Ubuntu 24.04, gcc 13.3.0,
+# valgrind 3.22.0, python3 aiohttp; see notes.md) with a long-lived container
+# that students reach via SSH / VS Code Remote-SSH and that hosts their
+# aiohttp servers on fixed ports (e.g. 5340, 34009, 34010, 20258, 4595).
+#
+# DRAFT — not built/tested. Networking (per-student IP+DNS), NetID auth and
+# persistent /home are provided by the orchestrator, not this image.
+
+# Ubuntu 24.04 matches the VM's gcc 13.3.0 / valgrind 3.22.0 version checks.
+# Pin by date tag (optionally also by digest) for reproducibility.
+FROM ubuntu:noble-20250910
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Mirrors the course's own dev-container Dockerfile package list
+# (cs340-schatz.com/mps/envr) plus what the VM workflow needs:
+#  - C toolchain: build-essential/make, gcc, clang, lld, gdb, lldb, valgrind
+#    (ASan runtime ships with gcc: libasan8)
+#  - Python: python3, pip/venv, aiohttp, pytest(+aiohttp plugin), certifi, mypy
+#    (mypy pre-installed so students never need `sudo apt install mypy`)
+#  - Utilities used in specs: curl wget git less nano jq xxd, man pages
+#  - openssh-server: VS Code Remote-SSH + scp (VS Code Server needs tar/procps)
+#  - procps/psmisc/lsof/iproute2: ps, kill, lsof, ss for managing
+#    `make background` servers and port checks
+#  - tini: reaps zombies from daemonized student servers
+# No GUI, no docker engine (no evidence students run Docker on the VM).
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+      build-essential make gcc g++ clang lld gdb lldb valgrind \
+      python3 python3-pip python3-venv python3-dev \
+      python3-aiohttp python3-pytest python3-pytest-aiohttp python3-pytest-asyncio \
+      python3-certifi mypy \
+      curl wget ca-certificates git less nano jq xxd file unzip zip tar \
+      man-db manpages manpages-dev \
+      openssh-server procps psmisc lsof iproute2 iputils-ping netcat-openbsd \
+      locales tzdata sudo tini \
+ && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Ubuntu minimal images strip man pages; re-enable if man is desired:
+#   RUN yes | unminimize   (adds ~200 MB; left out for slimness)
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TZ=America/Chicago
+
+# SSH: key or password auth is decided at deploy time. For NetID passwords,
+# the orchestrator should add SSSD/Kerberos config or an SSH ingress
+# (e.g. sshpiper) — out of scope for this image.
+RUN mkdir -p /run/sshd \
+ && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
+ && sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' /etc/ssh/sshd_config \
+ && printf 'AllowTcpForwarding yes\nClientAliveInterval 120\n' >> /etc/ssh/sshd_config
+
+# The per-student account (NetID, UID) is created at container start by the
+# orchestrator's entrypoint/init hook, with /home/<netid> as a persistent volume.
+# Optional passwordless sudo for that user can be added there if the instructor
+# wants it; nothing in the published MPs requires root.
+
+# Ports seen in Fa25 specs (documentation only; real exposure is via a
+# per-container routable IP so every student can use the same port numbers).
+EXPOSE 22 4595 5340 34009 34010 20258
+
+# Long-lived: sshd in foreground under tini, so backgrounded student servers
+# survive SSH logout (required for MP9/project checkoffs).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]

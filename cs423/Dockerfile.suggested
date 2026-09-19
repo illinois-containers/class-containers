@@ -1,0 +1,110 @@
+# =============================================================================
+# CS 423 (Operating Systems Design) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 423 (Operating Systems Design) student dev image -- DRAFT, not built/tested.
+#
+# Mirrors the Spring/Fall 2026 MP0 setup (Ubuntu 24.04 + Linux 5.15.165 +
+# cs423-uiuc/qemu-script). Students build their kernel and modules in this
+# container, then boot the kernel in user-mode QEMU via `cs423-q`. insmod/rmmod
+# happen INSIDE the QEMU guest, never in the shared host kernel.
+#
+# NOTE: cs423-q exports the container's "/" read-only over virtio-9p as the
+# guest's root fs, so guest-side userland (bash, mount, ip, kmod, setfattr,
+# procps...) must exist in THIS image.
+#
+# Pin by digest in production, e.g. ubuntu:24.04@sha256:<digest>.
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG KERNEL_VERSION=5.15.165
+ARG USERNAME=student
+ARG USER_UID=1000
+
+# 1) Packages from MP0 (build deps + QEMU)
+# 2) qemu-utils: MP3 needs `qemu-img create -f qcow2 swap.qcow2 2G`
+# 3) gdb: cs423-q "g" option (-s gdbstub); clangd + bear: optional MP0 tooling
+# 4) Guest-side userland used by cs423-q's in-guest init: kmod (insmod/modprobe/
+#    depmod), attr (setfattr), iproute2, procps, util-linux, busybox (udhcpc)
+# 5) ccache to speed repeat kernel builds; editors kept minimal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git bc libncurses-dev wget ca-certificates busybox libssl-dev libelf-dev \
+        dwarves flex bison build-essential python3 xz-utils cpio rsync patch \
+        qemu-system-x86 qemu-utils \
+        gdb clangd bear ccache \
+        kmod attr iproute2 procps util-linux less file \
+        vim-tiny nano sudo \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# If qemu-system-x86 pulls in unwanted firmware/GUI bits, consider
+# `qemu-system-x86` from --no-install-recommends only (already set) and verify
+# with `docker image inspect` size (~1.2-1.6 GB expected without kernel src).
+
+# Course QEMU script + configs (pin to a commit for reproducibility).
+# Placed at /opt/qemu-script; students reference it or symlink ../qemu-script.
+RUN git clone --depth 1 https://github.com/cs423-uiuc/qemu-script.git /opt/qemu-script \
+    && rm -rf /opt/qemu-script/.git
+
+# OPTIONAL: bake pristine kernel source (~1.2 GB extracted) read-only into the
+# image so students don't each download/extract it. Students can build
+# out-of-tree:  make -C /opt/linux-${KERNEL_VERSION} O=$HOME/linux-build ...
+# (Check that cs423-q, which requires .config in CWD, works when run from the
+# O= build dir; otherwise students `cp -a` the tree into $HOME.)
+RUN wget -q https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-${KERNEL_VERSION}.tar.xz -O /tmp/linux.tar.xz \
+    && tar -xf /tmp/linux.tar.xz -C /opt \
+    && rm /tmp/linux.tar.xz
+
+# Non-root student user; sudo kept for apt experimentation (container-local only).
+# The host's kvm GID is supplied at run time with --group-add.
+RUN useradd -m -s /bin/bash -u ${USER_UID} ${USERNAME} \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+ENV CCACHE_DIR=/home/${USERNAME}/.ccache \
+    CCACHE_MAXSIZE=5G \
+    # Keep guest RAM modest (script default is 4096 MB); override per run.
+    MEMORY=2048 \
+    NRCPU=2
+
+USER ${USERNAME}
+WORKDIR /home/${USERNAME}
+CMD ["/bin/bash", "-l"]
+
+# ---------------------------------------------------------------------------
+# Student workflow (inside the container), per MP0:
+#   cp -a /opt/linux-5.15.165 ~/linux-5.15.165 && cd ~/linux-5.15.165
+#   ln -s /opt/qemu-script ../qemu-script
+#   cp ../qemu-script/.config-x86-64 .config && make olddefconfig
+#   make -j4 CC="ccache gcc" LOCALVERSION=-$NETID
+#   ../qemu-script/cs423-q          # uses KVM if /dev/kvm usable, else TCG
+#   ../qemu-script/cs423-q -t       # force TCG (no /dev/kvm)
+#   MEMORY=1024 ../qemu-script/cs423-q   # smaller guest
+#   # In guest: uname -a ; insmod mp1.ko ; dmesg     Quit: Ctrl-A then X
+#   # gdb: cs423-q -g, then in another shell: gdb vmlinux -ex 'target remote :1234'
+#
+# Recommended run (per student, persistent home volume):
+#   docker run -it --name cs423-$NETID --hostname cs423-$NETID \
+#     --memory 6g --memory-reservation 1g --memory-swap 6g --cpus 4 \
+#     --pids-limit 4096 \
+#     --device /dev/kvm --group-add $(getent group kvm | cut -d: -f3) \
+#     --cap-drop ALL --security-opt no-new-privileges \
+#     -v cs423-home-$NETID:/home/student \
+#     cs423-dev:5.15.165
+#   Notes:
+#   - Omit --device/--group-add to run without KVM (TCG: slower, no extra
+#     host kernel attack surface). --cap-drop ALL + no-new-privileges disables
+#     sudo inside; drop those two flags if students need apt at runtime.
+#   - Budget ~20-25 GB for the home volume (built tree w/ DEBUG_INFO+BTF).
+#   - No --privileged, no host module loading, no CAP_BPF/CAP_SYS_ADMIN needed.
+# ---------------------------------------------------------------------------

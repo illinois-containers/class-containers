@@ -1,0 +1,163 @@
+# =============================================================================
+# CS 461 / ECE 422 (Computer Security I) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 461 / ECE 422 (Computer Security I) — student workbench image
+# =============================================================================
+# DRAFT — do NOT build/ship without confirming the toolchain against the real
+# (Box-hosted) VM image and current handouts. See notes.md for [CONFIRMED] vs
+# [INFERRED] labels and the open questions for the instructor.
+#
+# Scope: this image is the *student's* environment (the hosted equivalent of the
+# course VirtualBox .ova), covering AppSec, WebSec, Crypto, and NetSec. It is a
+# CLI workbench: SSH + all tools preinstalled, no desktop GUI.
+#
+# ARCHITECTURE: must be built and run on x86-64. AppSec targets are 32-bit x86
+# (-m32); they will NOT run on ARM without qemu-user.
+#
+# Base image choice:
+#   - ubuntu:22.04 (pinned by digest below) is the default.
+#   - If AppSec grading requires byte-exact reproduction of the shipped image's
+#     libc/kernel addresses, switch to ubuntu:18.04 to match Python 3.6.9 and the
+#     older glibc gadgets. CONFIRM WITH INSTRUCTOR (notes.md Q2).
+# =============================================================================
+
+# Pin by digest for reproducibility. Replace with the digest you actually pull:
+#   docker pull ubuntu:22.04 && docker inspect --format='{{index .RepoDigests 0}}' ubuntu:22.04
+FROM ubuntu:22.04@sha256:REPLACE_WITH_PINNED_DIGEST
+
+LABEL org.opencontainers.image.title="cs461-workbench" \
+      org.opencontainers.image.description="UIUC CS461/ECE422 student workbench (AppSec/WebSec/Crypto/NetSec)" \
+      org.opencontainers.image.source="https://courses.grainger.illinois.edu/cs461/"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    TZ=America/Chicago
+
+# --- Enable 32-bit (i386) multiarch BEFORE installing, for AppSec -m32 targets ---
+RUN dpkg --add-architecture i386
+
+# --- Core toolchain -----------------------------------------------------------
+# One RUN layer; clean apt caches in the same layer to keep the image small.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      # base / shell / build
+      ca-certificates sudo openssh-server tini \
+      build-essential make \
+      gcc-multilib g++-multilib libc6-dev-i386 \
+      # debugging / RE (AppSec)
+      gdb objdump binutils file \
+      libc6-dbg libc6-dbg:i386 \
+      # python (exploit scripts, Crypto, scapy)
+      python3 python3-pip python3-dev python3-venv \
+      # crypto (Crypto project)
+      openssl \
+      # networking / capture / crafting (NetSec)
+      tcpdump tshark iproute2 iputils-ping net-tools \
+      nmap dnsutils curl wget netcat-openbsd \
+      # web stack (WebSec BUNGLE!-style app) — MariaDB stands in for MySQL
+      mariadb-server mariadb-client \
+      php-cli php-mysql \
+      # editors / convenience
+      vim nano less git ltrace strace \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Python libraries ---------------------------------------------------------
+# pwntools/scapy pinned; pycryptodome for Crypto; Bottle+Flask for the web app.
+# Keep pip cache out of the layer. Adjust/trim once the real handouts are known.
+RUN pip3 install --no-cache-dir \
+      "scapy==2.5.0" \
+      "pwntools==4.11.1" \
+      "pycryptodome==3.20.0" \
+      "bottle==0.12.25" \
+      "flask==3.0.3" \
+      "requests==2.31.0"
+
+# --- OPTIONAL heavy tools (commented; enable only if a project truly needs them) ---
+# radare2 (RE convenience): adds ~50 MB.
+#   RUN apt-get update && apt-get install -y --no-install-recommends radare2 && rm -rf /var/lib/apt/lists/*
+# Headless Chromium + selenium (only if WebSec automation is required — notes.md Q6):
+#   adds ~400 MB and ~300-700 MB RSS at runtime. Prefer ssh -L to the student's own browser.
+#   RUN apt-get update && apt-get install -y --no-install-recommends chromium-browser && rm -rf /var/lib/apt/lists/*
+#   RUN pip3 install --no-cache-dir selenium==4.21.0
+# Forensics (only if NetSec still uses Autopsy/Sleuth Kit — notes.md Q10):
+#   RUN apt-get update && apt-get install -y --no-install-recommends sleuthkit && rm -rf /var/lib/apt/lists/*
+# NOTE: intentionally NO Ghidra (JVM + GUI, ~1 GB) and NO desktop environment.
+
+# --- pwndbg (nice-to-have gdb UI for AppSec); comment out to slim the image ----
+# RUN git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg \
+#     && /opt/pwndbg/setup.sh --update-only 2>/dev/null || true \
+#     && echo "source /opt/pwndbg/gdbinit.py" >> /etc/gdb/gdbinit
+
+# --- ASLR-off convenience wrapper (see notes.md 2a) ---------------------------
+# A container CANNOT set kernel.randomize_va_space (host-global). Instead run
+# targets under `norand ./target` which uses setarch -R (ADDR_NO_RANDOMIZE) for
+# that process tree only — no host change, no extra capability.
+RUN printf '#!/bin/sh\nexec setarch "$(uname -m)" -R "$@"\n' > /usr/local/bin/norand \
+    && chmod 0755 /usr/local/bin/norand
+
+# --- sshd + a non-root student account ---------------------------------------
+# In production, replace with your NetID/LDAP integration and a persistent /home
+# volume. The student is in sudo so suid AppSec targets and apt work; combine
+# with user namespaces so in-container root != host root (see notes.md 3).
+RUN mkdir -p /var/run/sshd \
+    && useradd -m -s /bin/bash student \
+    && echo 'student:changeme' | chpasswd \
+    && adduser student sudo \
+    && echo 'student ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/student \
+    && chmod 0440 /etc/sudoers.d/student \
+    # allow core dumps to land as ./core for AppSec post-mortem gdb (host core_pattern still governs)
+    && echo 'ulimit -c unlimited' >> /home/student/.bashrc
+
+EXPOSE 22
+# tini as PID 1 to reap zombies (gdb/target children, scapy sniffers).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]
+
+# =============================================================================
+# RECOMMENDED `docker run` FLAGS
+# -----------------------------------------------------------------------------
+# Baseline (Crypto/WebSec — no special caps):
+#
+#   docker run -d --name cs461-<netid> \
+#     --memory=2g --memory-reservation=512m --pids-limit=512 \
+#     --cap-drop=ALL \
+#     -v cs461-home-<netid>:/home/student \
+#     -p 0:22 \
+#     cs461-workbench
+#
+# AppSec (gdb needs ptrace; suid targets need privilege gain; run 32-bit on x86-64):
+#   add:  --cap-add=SYS_PTRACE
+#   do NOT set --security-opt=no-new-privileges (suid targets must escalate)
+#   ensure host: kernel has CONFIG_IA32_EMULATION; core_pattern is a plain "core"
+#   students run targets with:  norand ./target2 "$(python3 sol2.py)"
+#
+# NetSec (raw sockets, capture, ARP; keep attack traffic inside the container):
+#   add:  --cap-add=NET_RAW --cap-add=NET_ADMIN
+#   give each student an ISOLATED network so scapy/ARP never reaches a peer/host:
+#     docker network create --internal cs461net-<netid>   # no external routing
+#     docker run ... --network cs461net-<netid> ...
+#   the attacker/client/webserver/dnsserver virtual hosts live INSIDE this net.
+#
+# SAFETY RUNTIME (strongly recommended — students get in-container root):
+#   user namespaces:  dockerd --userns-remap=default   (in-container root -> unpriv host uid)
+#   AND one of:
+#     --runtime=runsc            # gVisor: user-space kernel, best for AppSec  (test gdb under it)
+#     --runtime=sysbox-runc      # Sysbox: strong isolation + nested bridge, best for NetSec
+#   keep the default (or a ptrace/raw-socket-permitting) seccomp profile — never --privileged,
+#   never --security-opt seccomp=unconfined.
+#
+# If the department will not run gVisor/sysbox, run this image inside a microVM
+# (Kata Containers / Firecracker) to match today's VM isolation.
+# =============================================================================

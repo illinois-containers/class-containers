@@ -1,0 +1,92 @@
+# =============================================================================
+# CS 525 (Advanced Distributed Systems) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# CS 525 "research base" image — DRAFT, not built/tested.
+#
+# Goal: a VM-like shell for distributed-systems research prototypes with the
+# common toolchains preinstalled. Project-specific stacks (Cassandra, Kafka,
+# Spark, Ray, k3s, ...) are expected to be layered on by each group in their
+# own Dockerfile:  FROM <registry>/cs525-research-base:2026sp
+#
+# Runs fine under runc for app-level work. For Docker-in-Docker, systemd, or
+# k3s/kind inside, run it with the sysbox runtime (--runtime=sysbox-runc).
+
+# Pin base by tag AND (at build time) digest, e.g. ubuntu:24.04@sha256:<digest>
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.23.4
+ARG TARGETARCH=amd64
+
+# Core build + debugging + networking tools.
+#  - build-essential/cmake/pkg-config: C/C++ prototypes
+#  - openjdk-21-jdk-headless + maven: JVM systems (Cassandra/Kafka/ZooKeeper forks)
+#  - python3 + venv/pip: Ray, PyTorch-CPU, experiment scripts, plotting
+#  - iproute2/iptables/tc (iproute2), iputils, dnsutils, netcat, tcpdump,
+#    iperf3: multi-node networking, failure injection, netem WAN emulation
+#    (tc/iptables need CAP_NET_ADMIN on the container at run time)
+#  - openssh-server/client: nodes SSH to each other like VMs
+#  - tmux/htop/sysstat/strace/gdb: long-running experiments + debugging
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget gnupg git sudo less vim-tiny nano unzip zip rsync jq \
+        build-essential cmake pkg-config gdb strace \
+        openjdk-21-jdk-headless maven \
+        python3 python3-pip python3-venv python3-dev \
+        iproute2 iptables iputils-ping dnsutils netcat-openbsd tcpdump iperf3 \
+        net-tools traceroute ethtool \
+        openssh-server openssh-client \
+        tmux htop sysstat procps psmisc lsof time \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain (Raft/etcd-style systems, Kubernetes controllers/schedulers).
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+      | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
+
+# Docker CLI + compose plugin only (no daemon). Groups either talk to a
+# per-group daemon provided by the platform, or run dockerd inside a sysbox
+# container (add docker-ce + containerd.io in a derived image for that).
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=${TARGETARCH} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && rm -rf /var/lib/apt/lists/*
+
+# kubectl for projects using a k3s/kind cluster (cluster itself not included).
+ARG KUBECTL_VERSION=v1.31.4
+RUN curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+ && chmod 0755 /usr/local/bin/kubectl
+
+# Keep JVMs from grabbing 25% of *host* RAM by default; respect the cgroup limit
+# and stay modest when idle (helps RAM overcommit). Groups can override.
+ENV JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=50 -XX:+UseSerialGC"
+
+# Non-root student user with passwordless sudo (root inside a user-namespaced
+# container only). The platform injects authorized_keys at run time.
+RUN useradd -m -s /bin/bash student \
+ && echo "student ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/student \
+ && mkdir -p /run/sshd /home/student/.ssh \
+ && chown -R student:student /home/student/.ssh && chmod 700 /home/student/.ssh \
+ && sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+WORKDIR /home/student
+EXPOSE 22
+
+# sshd in foreground is the only long-running process -> ~10-20 MB idle RSS.
+CMD ["/usr/sbin/sshd", "-D", "-e"]

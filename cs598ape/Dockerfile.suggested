@@ -1,0 +1,341 @@
+# =============================================================================
+# CS 598 APE (Performance Engineering) — SUGGESTED (UNTESTED) Dockerfile
+#
+# This is an untested draft, generated from public course materials.
+# It has NEVER been built and NEVER been run.
+# It is a starting point for a discussion with the instructor, not a working
+# image: expect wrong package names, wrong versions and missing steps.
+#
+# Please read CommentsForClass.md in this same directory first — it says what
+# we believe about this course and, more importantly, what we could not
+# confirm.
+#
+# The one image in this repo that has actually been built is the CS 341 pilot:
+# cs341/fa26/Dockerfile.
+# =============================================================================
+
+# =============================================================================
+# CS 598 APE — Advanced Performance Engineering (UIUC, Fall 2026)
+# Instructor: William (Billy) S. Moses  |  TA: Vimarsh Sathia
+#
+# Draft container image for the "replace VMs with Linux containers" study.
+# DO NOT BUILD AS PART OF THE STUDY WRITE-UP — this is a reviewed draft only.
+#
+# Provenance:
+#   This is a superset of the instructor's OWN course Dockerfile, which lives at
+#   https://github.com/PRONTOLab/598APE-HW1/blob/main/docker/Dockerfile
+#   (identical copy in 598APE-HW2-FA25/docker/Dockerfile) and is published as
+#   the prebuilt image `wsmoses/598ape` on Docker Hub.
+#   Everything in the "INSTRUCTOR BASELINE" section below is copied from that
+#   file (Ubuntu 24.04 + LLVM 19 + GCC + OpenMPI + ImageMagick + FFmpeg).
+#   Everything in the "ADDITIONS" sections is our proposal, not the
+#   instructor's, and should be confirmed with him before it is relied on.
+#
+# Design goals:
+#   - No GUI, no X11, no desktop. Headless only.
+#   - Everything a student needs for HW1/HW2/HW3 preinstalled so that per-student
+#     RAM is small and no per-student `apt install` is needed for the homeworks.
+#   - Course *projects* are open-ended (past ones used CUDA, the JVM/Kafka,
+#     CMake-heavy C++ research codebases, bioinformatics pipelines), so this
+#     image cannot possibly be complete for projects. See notes.md.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Base image — pinned by digest, not just by tag.
+# ubuntu:24.04 (noble) amd64 manifest digest, resolved 2026-09-16 from
+# https://hub.docker.com/v2/repositories/library/ubuntu/tags/24.04
+# Re-resolve and update this digest deliberately; do not float the tag, or the
+# toolchain versions under the students will drift mid-semester and invalidate
+# their measurements between HW1 and HW3.
+# -----------------------------------------------------------------------------
+FROM ubuntu@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
+# Equivalent to: FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.title="cs598ape" \
+      org.opencontainers.image.description="UIUC CS 598 APE (Advanced Performance Engineering) student environment" \
+      org.opencontainers.image.source="https://github.com/PRONTOLab/598APE-HW1" \
+      maintainer="CS VM Farm study"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    TZ=America/Chicago
+
+# =============================================================================
+# 1. INSTRUCTOR BASELINE — mirrors PRONTOLab/598APE-HW1/docker/Dockerfile
+#    LLVM/clang 19 from apt.llvm.org, GCC, OpenMPI, OpenMP, ImageMagick, FFmpeg.
+#    apt-key is deprecated on 24.04; we use a keyring under
+#    /etc/apt/keyrings instead of the instructor's `apt-key add -`.
+# =============================================================================
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg lsb-release software-properties-common; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/llvm.gpg; \
+    echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+        > /etc/apt/sources.list.d/llvm19.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        # --- build system / core toolchain (instructor baseline) ---
+        autoconf automake libtool pkg-config make cmake ninja-build git \
+        gcc g++ \
+        # --- LLVM 19 toolchain (instructor pins 19; keep in lockstep) ---
+        llvm-19 llvm-19-dev llvm-19-tools clang-19 clang-tools-19 lld-19 \
+        libomp-19-dev libclang-19-dev \
+        # --- MPI (instructor baseline; HW1-3 do not need it, projects might) ---
+        libopenmpi-dev openmpi-bin \
+        # --- image/video pipeline: HW1 raytracer shells out to these ---
+        #     HW1 uses ImageMagick `convert` for PPM<->PNG and ffmpeg for --movie
+        #     HW3 (FA25 Ising model) also uses ImageMagick `convert` for PNG out
+        imagemagick ffmpeg \
+    ; \
+    apt-get autoremove -y --purge; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# 2. ADDITION — performance measurement and profiling tooling.
+#    This is the whole point of the course and is NOT in the instructor's image.
+#    Students in past semesters clearly used profilers (the syllabus says
+#    "compilers, profilers, debuggers" are permitted resources), so they are
+#    installing these themselves on their VMs today.
+#
+#    !! READ THIS ABOUT `perf` !!
+#    `linux-tools-generic` installs a perf binary built for the *container
+#    image's* kernel package, not the host kernel. `perf` will warn or refuse
+#    ("perf not found for kernel X") when the host kernel differs. Two fixes,
+#    in order of preference:
+#      (a) bind-mount the host's perf:  -v /usr/bin/perf:/usr/bin/perf:ro
+#          plus -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro
+#      (b) build the image FROM a host-kernel-matched linux-tools-$(uname -r)
+#    Either way perf still needs host-side kernel.perf_event_paranoid and
+#    capabilities — see the `docker run` block at the bottom and notes.md §2.
+# =============================================================================
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        # perf (see caveat above), plus its optional deps for callgraph/demangle
+        linux-tools-common linux-tools-generic \
+        libcap2-bin \
+        # valgrind gives callgrind/cachegrind — simulated caches, so they work
+        # fine inside a container with no PMU access at all. Important fallback.
+        valgrind kcachegrind-converters \
+        # gprof + friends live in binutils; gdb for debugging
+        binutils gdb \
+        # gperftools: CPU profiler + tcmalloc heap profiler
+        google-perftools libgoogle-perftools-dev \
+        # NUMA / topology / affinity inspection and pinning
+        numactl hwloc libhwloc-dev util-linux \
+        # LIKWID: marker API, likwid-perfctr, likwid-topology, likwid-bench.
+        # NOTE: likwid-perfctr needs MSR access (/dev/cpu/*/msr) or the
+        # likwid access daemon; inside a container that means --device and
+        # usually --privileged. Expect likwid-topology to work and
+        # likwid-perfctr counters to fail unless the host grants access.
+        likwid \
+        # PAPI: portable hardware counter API, same PMU caveats as perf
+        libpapi-dev papi-tools \
+        # Intel TBB (parallelism; HW2/HW3 parallelization, projects)
+        libtbb-dev \
+    ; \
+    apt-get autoremove -y --purge; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# 3. ADDITION — languages beyond C/C++.
+#    C/C++ is what HW1-HW3 are written in [CONFIRMED]. Rust/Julia/Python are
+#    plausible for projects [INFERRED] — the instructor's research group works
+#    heavily in Julia (Enzyme.jl, Reactant.jl) and a Fall 2026 guest lecture is
+#    by Valentin Churavy (Julia core). Trim this section if the instructor says
+#    projects are C/C++ only; it is the biggest contributor to image size.
+# =============================================================================
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv python3-dev python3-numpy \
+        rustc cargo \
+    ; \
+    apt-get autoremove -y --purge; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# Julia is not in Ubuntu's archive at a useful version. Uncomment to add ~450MB.
+# ARG JULIA_VERSION=1.11.6
+# RUN set -eux; \
+#     curl -fsSL "https://julialang-s3.julialang.org/bin/linux/x64/${JULIA_VERSION%.*}/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" \
+#       | tar -xz -C /opt; \
+#     ln -s "/opt/julia-${JULIA_VERSION}/bin/julia" /usr/local/bin/julia
+
+# =============================================================================
+# 4. ADDITION — Intel oneAPI / VTune / Advisor / ICX are deliberately NOT here.
+#    Reasons: (a) ~10GB+ of image, (b) VTune's hardware event collection needs
+#    the sep/vtsspp kernel drivers or perf with paranoid<=0 on the HOST, which a
+#    container cannot provide for itself, (c) licensing/redistribution review.
+#    If the instructor wants VTune, the right answer is a host-level install
+#    bind-mounted read-only into the container, plus the host tuning in notes.md.
+#
+#    CUDA is likewise NOT here: the CS VM Farm VMs have no GPU, and the course
+#    About page tells students to use their own machines for GPU work
+#    ("or GPU features like tensorcores"). If GPU-backed containers ever exist,
+#    use nvidia/cuda:*-devel as the base and run with `--gpus all` via the
+#    NVIDIA Container Toolkit. See notes.md §2.
+# =============================================================================
+
+# =============================================================================
+# 5. Compatibility shims copied from the instructor's Dockerfile so that a
+#    student's Makefile / README commands work unmodified.
+# =============================================================================
+RUN set -eux; \
+    update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-19 10 \
+        --slave /usr/bin/clang++ clang++ /usr/bin/clang++-19; \
+    update-alternatives --install /usr/bin/opt     opt     /usr/bin/opt-19 10; \
+    update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-19 10; \
+    update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-19 10; \
+    # Instructor's image does `ln -s /usr/bin/convert /usr/bin/magick`.
+    # On 24.04 ImageMagick 6 ships `convert`; create `magick` only if missing.
+    if [ ! -e /usr/bin/magick ] && [ -e /usr/bin/convert ]; then \
+        ln -s /usr/bin/convert /usr/bin/magick; \
+    fi; \
+    # ImageMagick 6 on Ubuntu ships a policy.xml that caps memory/disk/area and
+    # blocks some formats. HW1 renders large PPMs; raise the caps or students
+    # hit "cache resources exhausted" on high-resolution runs.
+    if [ -f /etc/ImageMagick-6/policy.xml ]; then \
+        sed -i -E 's/(name="(memory|map|area|disk|width|height)" value=")[^"]*"/\1 0"/' \
+            /etc/ImageMagick-6/policy.xml || true; \
+    fi
+
+# Make the host-kernel perf, if bind-mounted, win over the packaged one.
+ENV PATH=/usr/lib/linux-tools-host:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+# =============================================================================
+# 6. Remote access: sshd for `ssh` + VS Code Remote-SSH.
+#    The course tells students the VM is reached over SSH with the campus VPN;
+#    keeping SSH as the front door means zero change to the student workflow.
+#    Keys only — no passwords. Keys are injected at run time by mounting an
+#    authorized_keys file; nothing secret is baked into the image.
+# =============================================================================
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssh-server sudo tmux vim nano less rsync ca-certificates; \
+    apt-get autoremove -y --purge; apt-get clean; rm -rf /var/lib/apt/lists/*; \
+    mkdir -p /run/sshd; \
+    printf '%s\n' \
+        'PermitRootLogin no' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'PubkeyAuthentication yes' \
+        'AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u .ssh/authorized_keys' \
+        'X11Forwarding no' \
+        'AllowTcpForwarding yes' \
+        'PermitTunnel no' \
+        'ClientAliveInterval 120' \
+        > /etc/ssh/sshd_config.d/10-cs598ape.conf; \
+    mkdir -p /etc/ssh/authorized_keys.d
+
+# -----------------------------------------------------------------------------
+# Unprivileged student account.
+#   - UID/GID 2000 so bind-mounted home directories have a predictable owner.
+#   - Passwordless sudo INSIDE the container. This is a deliberate choice: the
+#     course About page says "You can install any software and use the VMs to
+#     implement your homeworks/project", and students genuinely need to
+#     apt-install project dependencies. Container-root is not host-root as long
+#     as the container runs with a user namespace or at minimum with
+#     --cap-drop=ALL plus a small add-back set and no --privileged.
+#     If your threat model forbids in-container sudo, drop the sudoers line and
+#     accept that students must ask staff for every package.
+# -----------------------------------------------------------------------------
+ARG STUDENT_USER=student
+ARG STUDENT_UID=2000
+ARG STUDENT_GID=2000
+RUN set -eux; \
+    groupadd -g "${STUDENT_GID}" "${STUDENT_USER}"; \
+    useradd -m -u "${STUDENT_UID}" -g "${STUDENT_GID}" -s /bin/bash "${STUDENT_USER}"; \
+    echo "${STUDENT_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-student; \
+    chmod 0440 /etc/sudoers.d/90-student
+
+# No systemd, no Docker-in-Docker. See notes.md §3 — nothing in HW1/HW2/HW3
+# needs either. A student who wants Docker inside their environment should get
+# a rootless-podman add-on or an exemption, not a docker.sock bind mount.
+
+WORKDIR /home/student
+EXPOSE 22
+
+# Default: an interactive shell, matching the instructor's ./dockerrun.sh.
+# For the SSH-server deployment, override with:
+#   docker run ... cs598ape /usr/sbin/sshd -D -e
+CMD ["/bin/bash"]
+
+# =============================================================================
+# RECOMMENDED `docker run` FLAGS
+# =============================================================================
+#
+# ---- A. Quick interactive use, equivalent to the instructor's dockerrun.sh ----
+#
+#   docker run -it --rm \
+#     --security-opt seccomp=unconfined \
+#     -v "$PWD:/host" -w /host \
+#     cs598ape:2026 /bin/bash
+#
+#   (`seccomp=unconfined` is what the instructor's own dockerrun.sh uses; it is
+#   also what lets perf_event_open through the default seccomp profile.)
+#
+# ---- B. Per-student long-lived environment on a shared host ----
+#
+#   docker run -d --name ape-netid \
+#     --hostname ape-netid \
+#     \
+#     `# --- CPU: this is the part that decides whether measurements mean anything ---` \
+#     --cpuset-cpus=8-11          `# 4 DEDICATED physical cores, not shared, not SMT siblings` \
+#     --cpuset-mems=0             `# pin to one NUMA node; keep memory local` \
+#     --cpu-shares=1024           `# do NOT use --cpus/cpu.max: CFS throttling` \
+#                                 `# injects 100ms-period stalls that ruin timing runs` \
+#     \
+#     `# --- memory ---` \
+#     -m 8g --memory-swap 8g      `# hard cap, no swap: swapping silently destroys timings` \
+#     --pids-limit 4096 \
+#     --ulimit nofile=8192:16384 \
+#     --ulimit core=0 \
+#     --shm-size=1g               `# default 64MB is too small for OpenMPI shared-mem BTL` \
+#     \
+#     `# --- perf: needs the syscall unblocked AND the capability ---` \
+#     --security-opt seccomp=unconfined \
+#     --cap-add=PERFMON --cap-add=SYS_PTRACE \
+#     `# CAP_PERFMON exists on kernels >= 5.8; on older hosts use --cap-add=SYS_ADMIN.` \
+#     `# NONE of this helps unless the HOST has:` \
+#     `#     sysctl kernel.perf_event_paranoid=0   (or -1 for uncore/system-wide)` \
+#     `#     sysctl kernel.kptr_restrict=0         (for kernel symbol resolution)` \
+#     `# and unless the host CPU actually exposes a PMU (see notes.md §2).` \
+#     \
+#     `# --- host-kernel-matched perf binary (see section 2 above) ---` \
+#     -v /usr/bin/perf:/usr/bin/perf:ro \
+#     -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
+#     \
+#     `# --- persistent home; survives container restart/recreate ---` \
+#     -v /srv/ape/homes/netid:/home/student \
+#     -v /srv/ape/keys/netid.pub:/etc/ssh/authorized_keys.d/student:ro \
+#     \
+#     `# --- SSH: bind to loopback + a per-student port, reached via ssh -L,` \
+#     `#     rather than publishing 49 ports to the campus network ---` \
+#     -p 127.0.0.1:22001:22 \
+#     \
+#     --restart=unless-stopped \
+#     cs598ape:2026 /usr/sbin/sshd -D -e
+#
+# ---- C. Optional extras, only if the instructor confirms they are needed ----
+#
+#   hugepages:   --mount type=tmpfs,destination=/dev/hugepages \
+#                (plus host: `sysctl vm.nr_hugepages=N`)
+#   LIKWID/MSR:  --device /dev/cpu:/dev/cpu   (+ host `modprobe msr`)
+#                — grants raw MSR read/write; treat as near-root on the host.
+#   GPU:         --gpus all   (requires NVIDIA Container Toolkit on the host)
+#
+# ---- D. Host-level settings that matter more than any flag above ----
+#
+#   cpupower frequency-set -g performance
+#   echo 0 > /sys/devices/system/cpu/cpufreq/boost      # kill turbo variance
+#   echo 0 > /proc/sys/kernel/numa_balancing
+#   echo never > /sys/kernel/mm/transparent_hugepage/enabled
+#   isolcpus=/nohz_full= on the kernel cmdline for the cores handed to students
+#   Do NOT oversubscribe: 49 x 4 vCPU = 196 cores of demand. See notes.md §2.
+# =============================================================================

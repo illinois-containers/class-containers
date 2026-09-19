@@ -1,0 +1,65 @@
+# CS 525 (Advanced Distributed Systems) — untested draft (example cluster compose file), generated from public course materials; never run. Discussion starter only — see CommentsForClass.md in this directory; the working example is cs341/fa26/Dockerfile.
+
+# Example: one CS 525 group's 3-node "cluster" on an isolated network. DRAFT.
+#
+# - Each node is a long-running container from the research base image,
+#   reachable from its peers by hostname (node1, node2, node3) on a private
+#   bridge network that no other group shares ("internal: true" = no route
+#   to other groups; egress for apt/pip goes through a separate network).
+# - NET_ADMIN lets students run tc/netem and iptables inside their OWN netns
+#   (latency/partition/failure injection) without touching the host.
+# - mem_limit caps each node at the VM-equivalent 8g; mem_reservation is the
+#   small guaranteed amount used for overcommit planning.
+# - For Docker-in-Docker, systemd or k3s inside a node, uncomment
+#   runtime: sysbox-runc (requires sysbox installed on the host) — never use
+#   privileged: true on shared hosts.
+
+x-node: &node
+  image: registry.example.illinois.edu/cs525-research-base:2026sp
+  # runtime: sysbox-runc
+  cap_add: [NET_ADMIN]
+  mem_limit: 8g
+  mem_reservation: 512m
+  cpus: 2
+  pids_limit: 4096
+  restart: unless-stopped
+  networks: [group07-cluster, egress]
+  volumes:
+    - ./authorized_keys:/home/student/.ssh/authorized_keys:ro
+
+services:
+  node1:
+    <<: *node
+    hostname: node1
+    volumes:
+      - ./authorized_keys:/home/student/.ssh/authorized_keys:ro
+      - group07-node1:/home/student/work
+    ports:
+      - "127.0.0.1:22071:22"   # platform SSH gateway/bastion forwards here
+  node2:
+    <<: *node
+    hostname: node2
+    volumes:
+      - ./authorized_keys:/home/student/.ssh/authorized_keys:ro
+      - group07-node2:/home/student/work
+  node3:
+    <<: *node
+    hostname: node3
+    volumes:
+      - ./authorized_keys:/home/student/.ssh/authorized_keys:ro
+      - group07-node3:/home/student/work
+
+networks:
+  group07-cluster:
+    driver: bridge          # use an overlay/VXLAN network to span hosts
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.77.7.0/24
+  egress:
+    driver: bridge
+
+volumes:
+  group07-node1:
+  group07-node2:
+  group07-node3:

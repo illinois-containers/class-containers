@@ -1,0 +1,9 @@
+# The path defines class and semester, so they are not repeated here
+# (validation rejects them). This manifest exists only for the one thing the
+# path cannot express: an extra native-arm64 image for staff laptops.
+
+# Publishes cs341:sp27-img1-arm64dev alongside cs341:sp27-img1, built on a
+# native arm64 runner. DEV CONVENIENCE ONLY — AddressSanitizer's leak
+# detection does not work on arm64, so this image must never be used for
+# grading or given to students. See Known-Issues.md in this directory.
+arm64_dev: true

@@ -73,7 +73,10 @@ jobs:
   build:
     needs: prepare
     if: needs.prepare.outputs.count != '0'
-    runs-on: ubuntu-latest
+    # ubuntu-latest for amd64; ubuntu-24.04-arm (a native arm64 runner, free
+    # for public repos) for opt-in arm64 dev images, so their smoke test is a
+    # real test rather than an emulated one.
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write          # GITHUB_TOKEN only; no secrets are configured

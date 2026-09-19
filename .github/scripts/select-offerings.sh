@@ -44,6 +44,13 @@ manifest_multiarch() {  # <offering-dir>
   v="$(sed -n 's/^[[:space:]]*multiarch:[[:space:]]*\([a-zA-Z]*\).*/\1/p' "$f" | head -1)"
   [ "${v:-false}" = "true" ] && echo true || echo false
 }
+manifest_arm64_dev() {  # <offering-dir>
+  local f="$1/image.yml"
+  [ -f "$f" ] || { echo false; return; }
+  local v
+  v="$(sed -n 's/^[[:space:]]*arm64_dev:[[:space:]]*\([a-zA-Z]*\).*/\1/p' "$f" | head -1)"
+  [ "${v:-false}" = "true" ] && echo true || echo false
+}
 # Emits "subname<TAB>dockerfile<TAB>smoke" per image. With no manifest (the
 # common case) that is one line: img1, Dockerfile, ci-smoke.sh if it exists.
 manifest_images() {  # <offering-dir>
@@ -190,11 +197,24 @@ for o in "${selected[@]:-}"; do
     # so per-class means one flip per class ever, instead of one every
     # semester for every image.
     tag_base="${semester}-${subname}"
-    entry=$(printf '{"offering":"%s","class":"%s","semester":"%s","subname":"%s","registry":"%s","image":"%s/%s/%s","tag_base":"%s","dockerfile":"%s","context":"%s","smoke":"%s","multiarch":%s,"platforms":"%s"}' \
+    entry=$(printf '{"offering":"%s","class":"%s","semester":"%s","subname":"%s","registry":"%s","image":"%s/%s/%s","tag_base":"%s","dockerfile":"%s","context":"%s","smoke":"%s","multiarch":%s,"platforms":"%s","runner":"ubuntu-latest"}' \
       "$o" "$class" "$semester" "$subname" "$REGISTRY" "$REGISTRY" "$OWNER_LC" "$class" "$tag_base" \
       "$o/$dockerfile" "$o" "$smoke_path" "$multiarch" "$platforms")
     include="${include:+$include,}$entry"
     count=$((count + 1))
+
+    # Optional native-arm64 DEV image, for staff on Apple-silicon laptops.
+    # Built on a native arm64 runner (not QEMU) so its smoke test is a real
+    # test: that is how the arm64 LeakSanitizer gap was found. Published
+    # under a distinct -arm64dev tag and never as a student or grading
+    # target — see the offering's Known-Issues.md.
+    if [ "$(manifest_arm64_dev "$o")" = "true" ]; then
+      entry=$(printf '{"offering":"%s","class":"%s","semester":"%s","subname":"%s","registry":"%s","image":"%s/%s/%s","tag_base":"%s","dockerfile":"%s","context":"%s","smoke":"%s","multiarch":false,"platforms":"linux/arm64","runner":"ubuntu-24.04-arm"}' \
+        "$o" "$class" "$semester" "${subname}-arm64dev" "$REGISTRY" "$REGISTRY" "$OWNER_LC" "$class" "${tag_base}-arm64dev" \
+        "$o/$dockerfile" "$o" "$smoke_path")
+      include="${include:+$include,}$entry"
+      count=$((count + 1))
+    fi
   done < <(manifest_images "$o")
 done
 

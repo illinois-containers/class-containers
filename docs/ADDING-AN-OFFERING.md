@@ -144,8 +144,8 @@ Plus the build itself, and the smoke test inside it.
 On push to `main`, only the offerings whose files changed are built, and those are pushed to the registry as:
 
 ```
-ghcr.io/illinois-containers/fa27-cs341-img1
-ghcr.io/illinois-containers/fa27-cs341-img1:fa27-cs341-img1-20270819-a1b2c3d
+ghcr.io/illinois-containers/cs341:fa27-img1
+ghcr.io/illinois-containers/cs341:fa27-img1:cs341:fa27-img1-20270819-a1b2c3d
 ```
 
 The first tag moves when staff republish. The second never moves. There is no `latest` — see [DESIGN.md](DESIGN.md#no-latest). Point students at [STUDENTS.md](STUDENTS.md), which tells them to pin the digest.

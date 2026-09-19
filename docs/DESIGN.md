@@ -22,7 +22,7 @@ It also makes "what did students actually have in Fall 2026?" answerable by read
 
 `image.yml` **must not** contain `class` or `semester` fields. Validation rejects a manifest that has them.
 
-This looks pedantic until you watch it happen. Starting a new semester is a directory copy. A copied `image.yml` that says `semester: fa26` sitting in `cs341/sp27/` is not a typo anybody notices in review — it reads correctly, it is just in the wrong directory. The build then publishes `fa26-cs341-img1` from the Spring tree, overwriting the Fall tag that students are using. The only field that could have caught it is the one that caused it.
+This looks pedantic until you watch it happen. Starting a new semester is a directory copy. A copied `image.yml` that says `semester: fa26` sitting in `cs341/sp27/` is not a typo anybody notices in review — it reads correctly, it is just in the wrong directory. The build then publishes `cs341:fa26-img1` from the Spring tree, overwriting the Fall tag that students are using. The only field that could have caught it is the one that caused it.
 
 So the class and semester come from the path, always, and a manifest that tries to restate them is a hard failure with a message pointing here. There is no way to express the mistake.
 
@@ -92,15 +92,15 @@ This is not only a safety rule, it is the contribution path. A pull request from
 Published tags for one build:
 
 ```
-ghcr.io/illinois-containers/fa26-cs341-img1
-ghcr.io/illinois-containers/fa26-cs341-img1:fa26-cs341-img1-20260919-a1b2c3d
+ghcr.io/illinois-containers/cs341:fa26-img1
+ghcr.io/illinois-containers/cs341:fa26-img1:cs341:fa26-img1-20260919-a1b2c3d
 ```
 
 The first moves when staff republish. The second never moves. There is no `latest`.
 
 A moving tag mid-semester is the one failure a student cannot diagnose. Their code compiled on Tuesday and does not on Thursday; nothing in their repository changed; the error is in a header they have never opened. Everything they know how to check says nothing changed. Meanwhile a `docker pull` on another machine gets a different image than the one still cached on theirs, so "it works for me" is true for both of them simultaneously.
 
-Dropping `latest` does not remove the moving tag — `fa26-cs341-img1` still moves — but it removes the tag people reach for by habit, and it makes the dated tag the obvious thing to write down. Students pin the digest; see [STUDENTS.md](STUDENTS.md).
+Dropping `latest` does not remove the moving tag — `cs341:fa26-img1` still moves — but it removes the tag people reach for by habit, and it makes the dated tag the obvious thing to write down. Students pin the digest; see [STUDENTS.md](STUDENTS.md).
 
 The date-plus-short-sha suffix means the tag says when it was built and from which commit, which is what you need when a student reports something a month later.
 

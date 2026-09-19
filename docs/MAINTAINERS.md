@@ -39,9 +39,9 @@ No secrets are configured, and none should be. Pushing to GHCR uses the automati
 
 **GHCR creates a package as private on its first push, even for a public repository.** The build succeeds, the tag exists, the workflow is green, and students get `denied` or `not found` when they pull. Nothing in the logs says why.
 
-Once per **package name** (so once per `<semester>-<class>-<subname>`), after the first successful push to `main`:
+Once per **package name** (so once per `<class>:<semester>-<subname>`), after the first successful push to `main`:
 
-1. Org page → **Packages** → select the package (e.g. `fa26-cs341-img1`)
+1. Org page → **Packages** → select the package (e.g. `cs341:fa26-img1`)
 2. **Package settings**
 3. **Change visibility** → **Public** → confirm by typing the package name
 
@@ -51,7 +51,7 @@ Verify anonymously, from a machine that is not logged in:
 
 ```
 docker logout ghcr.io
-docker pull ghcr.io/illinois-containers/fa26-cs341-img1
+docker pull ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
 Do this before telling students the image exists. A new subname is a new package name and needs the same step again.

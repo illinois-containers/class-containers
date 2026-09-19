@@ -19,7 +19,7 @@
 # Typical invocation from the host, with the limits you intend to impose:
 #   docker run --rm --memory=2g --pids-limit=512 --cpus=4 \
 #     -v "$PWD/cs341/sp27/bigtest.sh:/bigtest.sh:ro" \
-#     ghcr.io/illinois-containers/sp27-cs341-img1 bash /bigtest.sh --level full
+#     ghcr.io/illinois-containers/cs341:sp27-img1 bash /bigtest.sh --level full
 #
 # Exit code 0 = every phase passed. Non-zero = number of failed phases.
 # A phase that is *expected* to hit a limit (fork storm) passes when the limit

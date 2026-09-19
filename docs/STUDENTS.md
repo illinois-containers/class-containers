@@ -3,17 +3,17 @@
 Your course staff will tell you the image name for your class and semester. It looks like this:
 
 ```
-ghcr.io/illinois-containers/fa26-cs341-img1
+ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
-Read it as `<semester>-<class>-<subname>`. The image for a different semester is a different image, not a different version of the same one.
+Read it as `<class>:<semester>-<subname>`. The image for a different semester is a different image, not a different version of the same one.
 
 Install Docker (Docker Desktop on macOS or Windows, the `docker` package on Linux). No login is needed — these images are public.
 
 ## Pull and run
 
 ```
-docker pull ghcr.io/illinois-containers/fa26-cs341-img1
+docker pull ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
 Run it with your work directory mounted, so your files live on your own machine and survive the container:
@@ -23,7 +23,7 @@ mkdir -p ~/cs341
 docker run --rm -it \
   -v ~/cs341:/home/student/work \
   -w /home/student/work \
-  ghcr.io/illinois-containers/fa26-cs341-img1 bash
+  ghcr.io/illinois-containers/cs341:fa26-img1 bash
 ```
 
 You get a shell. Your files are in `/home/student/work` inside the container and in `~/cs341` outside it — the same files, both places. Edit them with your normal editor on your own machine; compile and run them in the container.
@@ -37,25 +37,25 @@ If your course gives you memory or process limits to reproduce, add them:
 ```
 docker run --rm -it --memory=2g --pids-limit=512 --cpus=4 \
   -v ~/cs341:/home/student/work -w /home/student/work \
-  ghcr.io/illinois-containers/fa26-cs341-img1 bash
+  ghcr.io/illinois-containers/cs341:fa26-img1 bash
 ```
 
 ## Pin the digest
 
-There is no `latest` tag, on purpose. The plain tag `fa26-cs341-img1` **moves** when staff publish an update.
+There is no `latest` tag, on purpose. The plain tag `cs341:fa26-img1` **moves** when staff publish an update.
 
 That is usually fine. It is not fine the week before a deadline, when you want certainty that the thing compiling your code today is the thing that compiled it yesterday. A pinned digest gives you that: it names one exact image that can never change.
 
 Get the digest of the image you currently have:
 
 ```
-docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/illinois-containers/fa26-cs341-img1
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
 which prints something like
 
 ```
-ghcr.io/illinois-containers/fa26-cs341-img1@sha256:3f8c...
+ghcr.io/illinois-containers/cs341:fa26-img1@sha256:3f8c...
 ```
 
 Write that whole string down — in your notes, in a `Makefile`, in a shell alias — and use it instead of the tag:
@@ -63,7 +63,7 @@ Write that whole string down — in your notes, in a `Makefile`, in a shell alia
 ```
 docker run --rm -it \
   -v ~/cs341:/home/student/work -w /home/student/work \
-  ghcr.io/illinois-containers/fa26-cs341-img1@sha256:3f8c... bash
+  ghcr.io/illinois-containers/cs341:fa26-img1@sha256:3f8c... bash
 ```
 
 Now `docker pull` of that digest gets you the same bytes on any machine, forever. If you ever have to report a problem to course staff, **include the digest**; it is the difference between a reproducible bug and a shrug.
@@ -71,7 +71,7 @@ Now `docker pull` of that digest gets you the same bytes on any machine, forever
 There are also dated tags, which never move either:
 
 ```
-ghcr.io/illinois-containers/fa26-cs341-img1:fa26-cs341-img1-20260919-a1b2c3d
+ghcr.io/illinois-containers/cs341:fa26-img1:cs341:fa26-img1-20260919-a1b2c3d
 ```
 
 The digest is stronger, but a dated tag is easier to read and to type.
@@ -83,8 +83,8 @@ Watch the course announcement for it. Nothing on your machine changes on its own
 To take the update:
 
 ```
-docker pull ghcr.io/illinois-containers/fa26-cs341-img1
-docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/illinois-containers/fa26-cs341-img1
+docker pull ghcr.io/illinois-containers/cs341:fa26-img1
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
 and record the new digest. Your work is in the mounted directory, so nothing of yours is lost.

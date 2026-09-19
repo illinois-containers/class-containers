@@ -184,9 +184,14 @@ for o in "${selected[@]:-}"; do
     smoke_path=""
     [ -n "$smoke" ] && [ -f "$o/$smoke" ] && smoke_path="$o/$smoke"
 
-    tag_base="${semester}-${class}-${subname}"
+    # One package per CLASS, semester and subname in the tag:
+    #   ghcr.io/<owner>/cs341:sp27-img1
+    # Not one package per offering — package visibility is flipped by hand,
+    # so per-class means one flip per class ever, instead of one every
+    # semester for every image.
+    tag_base="${semester}-${subname}"
     entry=$(printf '{"offering":"%s","class":"%s","semester":"%s","subname":"%s","registry":"%s","image":"%s/%s/%s","tag_base":"%s","dockerfile":"%s","context":"%s","smoke":"%s","multiarch":%s,"platforms":"%s"}' \
-      "$o" "$class" "$semester" "$subname" "$REGISTRY" "$REGISTRY" "$OWNER_LC" "$tag_base" "$tag_base" \
+      "$o" "$class" "$semester" "$subname" "$REGISTRY" "$REGISTRY" "$OWNER_LC" "$class" "$tag_base" \
       "$o/$dockerfile" "$o" "$smoke_path" "$multiarch" "$platforms")
     include="${include:+$include,}$entry"
     count=$((count + 1))

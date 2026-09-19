@@ -103,7 +103,7 @@ for o in "${OFFERINGS[@]}"; do
       *) err "$o: subname '$subname' must start with a lowercase letter or digit." ;;
     esac
 
-    image="${semester}-${class}-${subname}"
+    image="${class}:${semester}-${subname}"
     prior="$(printf '%s\n' "$seen_images" | awk -F'\t' -v i="$image" '$1==i{print $2; exit}')"
     if [ -n "$prior" ]; then
       err "$o: image name '$image' is already produced by $prior. Two offerings cannot publish the same name."

@@ -46,8 +46,8 @@ The semester lives in the directory name, not in a build setting. Duplicating a 
 ## Image names
 
 ```
-ghcr.io/illinois-containers/<semester>-<class>-<subname>
-e.g. ghcr.io/illinois-containers/fa26-cs341-img1
+ghcr.io/illinois-containers/<class>:<semester>-<subname>
+e.g. ghcr.io/illinois-containers/cs341:fa26-img1
 ```
 
 The sub-name lets one class publish more than one image — a student image and a grader image, say. There is deliberately no `latest` tag: a moving tag mid-semester is the one failure students cannot diagnose. Pin the digest.
